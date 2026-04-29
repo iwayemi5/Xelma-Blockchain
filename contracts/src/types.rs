@@ -32,7 +32,7 @@ pub enum DataKey {
     Admin,
     Oracle,
     ActiveRound,
-    Positions, // Legacy key — read-only migration compat
+    Positions,          // Legacy key — read-only migration compat
     UpDownPositions,    // Legacy key — read-only migration compat
     PrecisionPositions, // Legacy key — read-only migration compat
     PendingWinnings(Address),

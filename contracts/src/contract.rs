@@ -339,7 +339,9 @@ impl VirtualTokenContract {
             .get(&participants_key)
             .unwrap_or(Vec::new(&env));
         participants.push_back(user.clone());
-        env.storage().persistent().set(&participants_key, &participants);
+        env.storage()
+            .persistent()
+            .set(&participants_key, &participants);
 
         // Update cached round pools and write once
         match side {
@@ -450,7 +452,9 @@ impl VirtualTokenContract {
             .get(&participants_key)
             .unwrap_or(Vec::new(&env));
         participants.push_back(user.clone());
-        env.storage().persistent().set(&participants_key, &participants);
+        env.storage()
+            .persistent()
+            .set(&participants_key, &participants);
 
         // Emit event for precision prediction
         // Topic: ("predict", "price")
@@ -648,7 +652,7 @@ impl VirtualTokenContract {
 
         // Verify data freshness (max 300 seconds / 5 minutes old)
         let current_time = env.ledger().timestamp();
-        
+
         // Reject future timestamps to prevent time-skew manipulation
         if payload.timestamp > current_time {
             return Err(ContractError::FutureOracleData);
@@ -939,7 +943,11 @@ impl VirtualTokenContract {
             }
         }
 
-        // Distribute winnings to winner(s)
+        // Distribute winnings to winner(s).
+        // Remainder policy: `participants` is a `Vec<Address>` appended in bet-placement
+        // order; `winners` is built from that same single pass, so index 0 is always the
+        // first-to-bet winner. Any integer remainder from the even split is assigned to
+        // that winner, making the distribution fully deterministic for a given round.
         if !winners.is_empty() && total_pot > 0 {
             let winner_count = winners.len() as i128;
             let payout_per_winner = total_pot / winner_count;
@@ -951,7 +959,7 @@ impl VirtualTokenContract {
                     let key = DataKey::PendingWinnings(winner.user.clone());
                     let existing_pending: i128 = env.storage().persistent().get(&key).unwrap_or(0);
 
-                    // First winner gets the remainder (if any)
+                    // First winner (lowest XDR-ordered Address) absorbs the remainder.
                     let payout = if i == 0 {
                         payout_per_winner
                             .checked_add(remainder)
@@ -1035,6 +1043,11 @@ impl VirtualTokenContract {
             }
         }
 
+        // Remainder policy: `predictions_map` is a `Map<Address, PrecisionPrediction>`, which
+        // Soroban keeps sorted by XDR-encoded key bytes. `winners` is built by iterating
+        // `predictions_map.values()` in that stable key order, so index 0 always refers to
+        // the lexicographically-lowest Address. Any integer remainder from the even split is
+        // assigned exclusively to that winner, making the distribution fully deterministic.
         if !winners.is_empty() && total_pot > 0 {
             let winner_count = winners.len() as i128;
             let payout_per_winner = total_pot / winner_count;
@@ -1050,10 +1063,6 @@ impl VirtualTokenContract {
                     } else {
                         payout_per_winner
                     };
-                    let new_pending = existing_pending
-                        .checked_add(payout)
-                        .ok_or(ContractError::Overflow)?;
-
                     let new_pending = Self::payout_add(existing_pending, payout)?;
                     env.storage().persistent().set(&key, &new_pending);
                     Self::_update_stats_win(env, winner.user.clone())?;
@@ -1115,10 +1124,7 @@ impl VirtualTokenContract {
         for i in 0..participants.len() {
             if let Some(user) = participants.get(i) {
                 let pos_key = DataKey::Position(round_id, user.clone());
-                if let Some(position) = env
-                    .storage()
-                    .persistent()
-                    .get::<_, UserPosition>(&pos_key)
+                if let Some(position) = env.storage().persistent().get::<_, UserPosition>(&pos_key)
                 {
                     let key = DataKey::PendingWinnings(user.clone());
                     let existing_pending: i128 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -1150,15 +1156,11 @@ impl VirtualTokenContract {
         for i in 0..participants.len() {
             if let Some(user) = participants.get(i) {
                 let pos_key = DataKey::Position(round_id, user.clone());
-                if let Some(position) = env
-                    .storage()
-                    .persistent()
-                    .get::<_, UserPosition>(&pos_key)
+                if let Some(position) = env.storage().persistent().get::<_, UserPosition>(&pos_key)
                 {
                     if position.side == winning_side {
                         // Compute all payout math before any storage write
-                        let share_numerator =
-                            Self::payout_mul(position.amount, losing_pool)?;
+                        let share_numerator = Self::payout_mul(position.amount, losing_pool)?;
                         let share = share_numerator / winning_pool;
                         let payout = Self::payout_add(position.amount, share)?;
 
@@ -1266,6 +1268,14 @@ impl VirtualTokenContract {
     fn _ensure_not_paused(env: &Env) -> Result<(), ContractError> {
         if Self::is_paused(env.clone()) {
             return Err(ContractError::ContractPaused);
+        }
+
+        Ok(())
+    }
+
+    fn assert_no_active_round(env: &Env) -> Result<(), ContractError> {
+        if env.storage().persistent().has(&DataKey::ActiveRound) {
+            return Err(ContractError::RoundAlreadyActive);
         }
 
         Ok(())
