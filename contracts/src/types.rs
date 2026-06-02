@@ -1,6 +1,6 @@
 //! Type definitions for the XLM Price Prediction Market.
 
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, BytesN};
 
 /// Round mode for prediction type
 #[contracttype]
@@ -45,6 +45,8 @@ pub enum DataKey {
     Position(u64, Address),
     /// Per-user Precision prediction: (round_id, address) → PrecisionPrediction
     PrecisionPosition(u64, Address),
+    /// Per-user Precision commitment: (round_id, address) → PrecisionCommitment
+    PrecisionCommitment(u64, Address),
     /// Ordered participant list for a round: round_id → Vec<Address>
     RoundParticipants(u64),
     /// Maximum stake allowed per individual bet (None = unlimited)
@@ -91,6 +93,14 @@ pub struct PrecisionPrediction {
     pub user: Address,
     pub predicted_price: u128, // Price scaled to 4 decimals (e.g., 0.2297 → 2297)
     pub amount: i128,          // Bet amount
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrecisionCommitment {
+    pub hash: BytesN<32>,
+    pub amount: i128,
+    pub revealed: bool,
 }
 
 #[contracttype]

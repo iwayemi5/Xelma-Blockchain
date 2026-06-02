@@ -69,4 +69,12 @@ pub enum ContractError {
     PendingWinningsCapExceeded = 30,
     /// Oracle payload nonce was already consumed for this round (replay)
     OracleNonceReused = 31,
+    /// Commitment for precision prediction not found
+    CommitmentNotFound = 32,
+    /// Precision prediction has already been revealed
+    AlreadyRevealed = 33,
+    /// Attempted to reveal prediction outside the valid window
+    InvalidRevealWindow = 34,
+    /// Revealed prediction hash does not match committed hash
+    HashMismatch = 35,
 }
