@@ -36,6 +36,45 @@ sent back for detail before they are picked up.
    - `cd bindings && npm ci && npm run build`
    - `cd bindings && npm run test:parity` (ABI drift check; mirrors the CI `bindings-test` job)
 
+## Security Checks (local)
+
+The CI `security-audit` job runs two checks that maintainers and contributors can reproduce locally.
+
+### 1. Dependency vulnerability scan
+
+```bash
+# Install once
+cargo install cargo-audit --locked
+
+# Run from the repo root
+cargo audit --deny warnings
+```
+
+Findings map to RustSec advisories. A non-zero exit means at least one advisory-level issue
+was found. Review the output and update or replace the affected crate, or add an `audit.toml`
+ignore entry with a justification comment if the advisory does not apply to this project.
+
+### 2. Security-oriented clippy lints
+
+```bash
+cargo clippy --workspace --all-targets --locked -- \
+  -D clippy::unwrap_used \
+  -D clippy::expect_used \
+  -D clippy::panic \
+  -D clippy::integer_arithmetic \
+  -W clippy::arithmetic_side_effects \
+  -W clippy::cast_possible_truncation \
+  -W clippy::cast_sign_loss
+```
+
+These lints catch patterns that are benign in general Rust but unsafe in smart-contract
+contexts (silent panics, unchecked integer operations, sign-loss on casts).  CI treats them
+as warnings that are surfaced in the audit job output; errors `-D` will fail the job.
+
+> **Note**: These lints are stricter than the standard `cargo clippy -- -D warnings` run in
+> the `rust-test` job. It is normal for code that passes standard clippy to have findings here.
+> Fix or document each finding before merging contract changes.
+
 ## Canonical Contract Crate
 
 The contract crate name is `xelma-contract`. Do not reintroduce legacy crate naming in build scripts, docs, or CI commands.
