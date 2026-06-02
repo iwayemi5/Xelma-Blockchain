@@ -60,6 +60,10 @@ pub enum DataKey {
     ConsumedOracleNonce(u64, u64),
     /// Minimum participant count for competitive settlement; unset = no minimum enforced
     MinParticipants,
+    /// Oracle heartbeat: last recorded timestamp and status
+    OracleHeartbeat,
+    /// Stale-heartbeat threshold in seconds (admin-configurable); unset = 3600 s default
+    OracleStaleThreshold,
 }
 
 /// Represents which side a user bet on
@@ -110,6 +114,15 @@ pub struct OraclePayload {
     /// `DataKey::ConsumedOracleNonce(round_id, nonce)` and rejects any reuse,
     /// making resolution idempotent against accidental duplicate submissions.
     pub nonce: u64,
+}
+
+/// Oracle liveness record, updated by the oracle service on each heartbeat call.
+/// `status`: 0 = active, 1 = degraded, 2 = offline.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleHeartbeatRecord {
+    pub timestamp: u64,
+    pub status: u32,
 }
 
 #[contracttype]

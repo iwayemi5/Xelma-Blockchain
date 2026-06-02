@@ -73,4 +73,8 @@ pub enum ContractError {
     InsufficientParticipants = 32,
     /// Minimum participants value is out of valid range (must be 1–10000)
     InvalidMinParticipants = 33,
+    /// Oracle heartbeat status is out of range (must be 0, 1, or 2)
+    InvalidOracleStatus = 34,
+    /// Oracle stale threshold is out of valid range (must be 60–86400 seconds)
+    InvalidStaleThreshold = 35,
 }
