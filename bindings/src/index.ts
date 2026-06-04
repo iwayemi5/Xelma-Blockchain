@@ -66,7 +66,7 @@ export type BetSide = {tag: "Up", values: void} | {tag: "Down", values: void};
  * Legacy single-key maps (`UpDownPositions`, `PrecisionPositions`) are kept for
  * backward-compatible reads during a migration window; they are no longer written.
  */
-export type DataKey = {tag: "Balance", values: readonly [string]} | {tag: "Admin", values: void} | {tag: "Oracle", values: void} | {tag: "ActiveRound", values: void} | {tag: "Positions", values: void} | {tag: "UpDownPositions", values: void} | {tag: "PrecisionPositions", values: void} | {tag: "PendingWinnings", values: readonly [string]} | {tag: "UserStats", values: readonly [string]} | {tag: "Paused", values: void} | {tag: "BetWindowLedgers", values: void} | {tag: "RunWindowLedgers", values: void} | {tag: "LastRoundId", values: void} | {tag: "Position", values: readonly [u64, string]} | {tag: "PrecisionPosition", values: readonly [u64, string]} | {tag: "PrecisionCommitment", values: readonly [u64, string]} | {tag: "RoundParticipants", values: readonly [u64]} | {tag: "MaxStake", values: void} | {tag: "MaxUserRoundExposure", values: void} | {tag: "MaxPendingWinnings", values: void} | {tag: "CancelledRound", values: readonly [u64]} | {tag: "ConsumedOracleNonce", values: readonly [u64, u64]};
+export type DataKey = {tag: "Balance", values: readonly [string]} | {tag: "Admin", values: void} | {tag: "Oracle", values: void} | {tag: "SchemaVersion", values: void} | {tag: "ActiveRound", values: void} | {tag: "Positions", values: void} | {tag: "UpDownPositions", values: void} | {tag: "PrecisionPositions", values: void} | {tag: "PendingWinnings", values: readonly [string]} | {tag: "UserStats", values: readonly [string]} | {tag: "Paused", values: void} | {tag: "BetWindowLedgers", values: void} | {tag: "RunWindowLedgers", values: void} | {tag: "LastRoundId", values: void} | {tag: "Position", values: readonly [u64, string]} | {tag: "PrecisionPosition", values: readonly [u64, string]} | {tag: "PrecisionCommitment", values: readonly [u64, string]} | {tag: "RoundParticipants", values: readonly [u64]} | {tag: "MaxStake", values: void} | {tag: "MaxUserRoundExposure", values: void} | {tag: "MaxPendingWinnings", values: void} | {tag: "CancelledRound", values: readonly [u64]} | {tag: "ConsumedOracleNonce", values: readonly [u64, u64]} | {tag: "MinParticipants", values: void} | {tag: "OracleHeartbeat", values: void} | {tag: "OracleStaleThreshold", values: void} | {tag: "OracleMaxDeviationBps", values: void} | {tag: "OracleDeviationOverrideArmed", values: void};
 
 /**
  * Round mode for prediction type
@@ -108,6 +108,15 @@ nonce: u64;
  */
 round_id: u32;
   timestamp: u64;
+}
+
+/**
+ * Oracle liveness record, updated by the oracle service on each heartbeat call.
+ * `status`: 0 = active, 1 = degraded, 2 = offline.
+ */
+export interface OracleHeartbeatRecord {
+  timestamp: u64;
+  status: u32;
 }
 
 
@@ -252,25 +261,69 @@ export const ContractError = {
    */
   30: {message:"PendingWinningsCapExceeded"},
   /**
+   * Start price is below the minimum allowed value
+   */
+  31: {message:"StartPriceTooLow"},
+  /**
+   * Start price exceeds the maximum allowed value
+   */
+  32: {message:"StartPriceTooHigh"},
+  /**
    * Oracle payload nonce was already consumed for this round (replay)
    */
-  31: {message:"OracleNonceReused"},
+  33: {message:"OracleNonceReused"},
+  /**
+   * Round has fewer participants than the configured minimum for competitive settlement
+   */
+  34: {message:"InsufficientParticipants"},
+  /**
+   * Minimum participants value is out of valid range (must be 1–10000)
+   */
+  35: {message:"InvalidMinParticipants"},
+  /**
+   * Oracle heartbeat status is out of range (must be 0, 1, or 2)
+   */
+  36: {message:"InvalidOracleStatus"},
+  /**
+   * Oracle stale threshold is out of valid range (must be 60–86400 seconds)
+   */
+  37: {message:"InvalidStaleThreshold"},
+  /**
+   * Oracle max deviation bps is invalid (must be > 0)
+   */
+  38: {message:"InvalidOracleDeviationBps"},
+  /**
+   * Oracle final price deviates beyond configured threshold
+   */
+  39: {message:"OracleDeviationExceeded"},
+  /**
+   * Stored schema version is unknown or unsupported by this contract build
+   */
+  40: {message:"UnsupportedSchemaVersion"},
+  /**
+   * Migration path is invalid for the stored schema version
+   */
+  41: {message:"InvalidMigrationPath"},
+  /**
+   * Migration cannot run while a round is active
+   */
+  42: {message:"MigrationActiveRound"},
   /**
    * Commitment for precision prediction not found
    */
-  32: {message:"CommitmentNotFound"},
+  43: {message:"CommitmentNotFound"},
   /**
    * Precision prediction has already been revealed
    */
-  33: {message:"AlreadyRevealed"},
+  44: {message:"AlreadyRevealed"},
   /**
    * Attempted to reveal prediction outside the valid window
    */
-  34: {message:"InvalidRevealWindow"},
+  45: {message:"InvalidRevealWindow"},
   /**
    * Revealed prediction hash does not match committed hash
    */
-  35: {message:"HashMismatch"}
+  46: {message:"HashMismatch"}
 }
 
 export interface Client {
@@ -1002,6 +1055,128 @@ export interface Client {
     simulate?: boolean;
   }) => Promise<AssembledTransaction<Option<PrecisionPrediction>>>
 
+  /**
+   * Construct and simulate a get_schema_version transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the stored schema version. If unset, returns legacy version 1.
+   */
+  get_schema_version: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<u32>>
+
+  /**
+   * Construct and simulate a migrate_schema_v1_to_v2 transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Migrates legacy schema version 1 → current schema version 2 (admin only).
+   */
+  migrate_schema_v1_to_v2: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a set_oracle_max_deviation_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sets the maximum oracle price deviation allowed at settlement (admin only).
+   */
+  set_oracle_max_deviation_bps: ({bps}: {bps: Option<u32>}, options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_oracle_max_deviation_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the configured oracle max deviation bps, if set.
+   */
+  get_oracle_max_deviation_bps: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Option<u32>>>
+
+  /**
+   * Construct and simulate an arm_oracle_deviation_override transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Arms a one-shot override to bypass deviation checks for the next settlement (admin only).
+   */
+  arm_oracle_deviation_override: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate an update_oracle_heartbeat transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Records an oracle heartbeat (oracle only).
+   * `status`: 0 = active, 1 = degraded, 2 = offline.
+   */
+  update_oracle_heartbeat: ({status}: {status: u32}, options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_oracle_heartbeat transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the most recent oracle heartbeat record, if any.
+   */
+  get_oracle_heartbeat: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Option<OracleHeartbeatRecord>>>
+
+  /**
+   * Construct and simulate an is_oracle_live transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns `true` if the oracle has a non-stale heartbeat with status not offline (2).
+   */
+  is_oracle_live: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<boolean>>
+
+  /**
+   * Construct and simulate a set_oracle_stale_threshold transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sets the stale heartbeat threshold in seconds (admin only).
+   * Allowed range: 60–86400 seconds (1 minute to 24 hours).
+   */
+  set_oracle_stale_threshold: ({seconds}: {seconds: u64}, options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_oracle_stale_threshold transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the configured oracle stale threshold, or the default (3600 s) if not set.
+   */
+  get_oracle_stale_threshold: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<u64>>
+
+  /**
+   * Construct and simulate a set_min_participants transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sets the minimum participant count required for competitive settlement (admin only).
+   */
+  set_min_participants: ({min}: {min: Option<u32>}, options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_min_participants transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the current minimum participant threshold, if set.
+   */
+  get_min_participants: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Option<u32>>>
+
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -1099,6 +1274,18 @@ export class Client extends ContractClient {
         set_max_pending_winnings: this.txFromJSON<Result<void>>,
         get_precision_predictions: this.txFromJSON<Array<PrecisionPrediction>>,
         place_precision_prediction: this.txFromJSON<Result<void>>,
-        get_user_precision_prediction: this.txFromJSON<Option<PrecisionPrediction>>
+        get_user_precision_prediction: this.txFromJSON<Option<PrecisionPrediction>>,
+        get_schema_version: this.txFromJSON<u32>,
+        migrate_schema_v1_to_v2: this.txFromJSON<Result<void>>,
+        set_oracle_max_deviation_bps: this.txFromJSON<Result<void>>,
+        get_oracle_max_deviation_bps: this.txFromJSON<Option<u32>>,
+        arm_oracle_deviation_override: this.txFromJSON<Result<void>>,
+        update_oracle_heartbeat: this.txFromJSON<Result<void>>,
+        get_oracle_heartbeat: this.txFromJSON<Option<OracleHeartbeatRecord>>,
+        is_oracle_live: this.txFromJSON<boolean>,
+        set_oracle_stale_threshold: this.txFromJSON<Result<void>>,
+        get_oracle_stale_threshold: this.txFromJSON<u64>,
+        set_min_participants: this.txFromJSON<Result<void>>,
+        get_min_participants: this.txFromJSON<Option<u32>>
   }
 }
