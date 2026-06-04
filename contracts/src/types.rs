@@ -31,6 +31,9 @@ pub enum DataKey {
     Balance(Address),
     Admin,
     Oracle,
+    /// On-chain storage schema version for migration safety.
+    /// If missing, the contract treats it as legacy schema version 1.
+    SchemaVersion,
     ActiveRound,
     Positions,          // Legacy key — read-only migration compat
     UpDownPositions,    // Legacy key — read-only migration compat
@@ -60,6 +63,18 @@ pub enum DataKey {
     /// Per-round consumed oracle nonce: (round_id, nonce) → true.
     /// Used to reject duplicate oracle payload submissions for the same round.
     ConsumedOracleNonce(u64, u64),
+    /// Minimum participant count for competitive settlement; unset = no minimum enforced
+    MinParticipants,
+    /// Oracle heartbeat: last recorded timestamp and status
+    OracleHeartbeat,
+    /// Stale-heartbeat threshold in seconds (admin-configurable); unset = 3600 s default
+    OracleStaleThreshold,
+    /// Oracle max deviation threshold in basis points (1 bp = 0.01%).
+    /// If unset, deviation guardrails are disabled.
+    OracleMaxDeviationBps,
+    /// One-shot admin override allowing the next settlement to bypass deviation checks.
+    /// Automatically cleared after use.
+    OracleDeviationOverrideArmed,
 }
 
 /// Represents which side a user bet on
@@ -118,6 +133,15 @@ pub struct OraclePayload {
     /// `DataKey::ConsumedOracleNonce(round_id, nonce)` and rejects any reuse,
     /// making resolution idempotent against accidental duplicate submissions.
     pub nonce: u64,
+}
+
+/// Oracle liveness record, updated by the oracle service on each heartbeat call.
+/// `status`: 0 = active, 1 = degraded, 2 = offline.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleHeartbeatRecord {
+    pub timestamp: u64,
+    pub status: u32,
 }
 
 #[contracttype]

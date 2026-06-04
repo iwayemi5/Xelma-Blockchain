@@ -4,7 +4,8 @@ use crate::contract::{VirtualTokenContract, VirtualTokenContractClient};
 use crate::errors::ContractError;
 use crate::types::{DataKey, OraclePayload};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    symbol_short,
+    testutils::{Address as _, Events, Ledger as _, TryIntoVal},
     Address, Env, IntoVal,
 };
 
@@ -274,6 +275,422 @@ fn test_resolve_round_unique_nonce_resolves() {
             .unwrap_or(false);
         assert!(consumed, "resolved nonce must be marked consumed");
     });
+}
+
+// ─── Oracle heartbeat and liveness tests ─────────────────────────────────────
+
+#[test]
+fn test_oracle_heartbeat_requires_oracle_auth() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (&admin, &oracle).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(&admin, &oracle);
+
+    // No oracle auth set up — must fail
+    let result = client.try_update_oracle_heartbeat(&0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_oracle_heartbeat_updates_timestamp_and_status() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 500;
+    });
+
+    client.update_oracle_heartbeat(&0u32);
+
+    let record = client.get_oracle_heartbeat().expect("heartbeat must exist");
+    assert_eq!(record.timestamp, 500);
+    assert_eq!(record.status, 0);
+
+    // Update to degraded status
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+    client.update_oracle_heartbeat(&1u32);
+
+    let record = client.get_oracle_heartbeat().unwrap();
+    assert_eq!(record.timestamp, 1000);
+    assert_eq!(record.status, 1);
+}
+
+#[test]
+fn test_oracle_heartbeat_invalid_status_rejected() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    let result = client.try_update_oracle_heartbeat(&3u32);
+    assert_eq!(result, Err(Ok(ContractError::InvalidOracleStatus)));
+}
+
+#[test]
+fn test_oracle_liveness_within_threshold() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    // Heartbeat at t=0
+    env.ledger().with_mut(|li| {
+        li.timestamp = 0;
+    });
+    client.update_oracle_heartbeat(&0u32);
+
+    // Check liveness 100 s later (well within 3600 s default)
+    env.ledger().with_mut(|li| {
+        li.timestamp = 100;
+    });
+    assert!(client.is_oracle_live());
+}
+
+#[test]
+fn test_oracle_liveness_stale_after_threshold() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    // Heartbeat at t=0
+    env.ledger().with_mut(|li| {
+        li.timestamp = 0;
+    });
+    client.update_oracle_heartbeat(&0u32);
+
+    // Check 4000 s later — beyond 3600 s default threshold
+    env.ledger().with_mut(|li| {
+        li.timestamp = 4000;
+    });
+    assert!(!client.is_oracle_live());
+}
+
+#[test]
+fn test_oracle_liveness_offline_status_not_live() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 0;
+    });
+    // Record offline status
+    client.update_oracle_heartbeat(&2u32);
+
+    // Even within threshold, offline means not live
+    env.ledger().with_mut(|li| {
+        li.timestamp = 10;
+    });
+    assert!(!client.is_oracle_live());
+}
+
+#[test]
+fn test_oracle_liveness_no_heartbeat_returns_false() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    // No heartbeat recorded — must return false
+    assert!(!client.is_oracle_live());
+}
+
+#[test]
+fn test_oracle_heartbeat_event_emitted() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    client.update_oracle_heartbeat(&0u32);
+
+    let events = env.events().all();
+    let hb_event = events.iter().find(|e| {
+        let (_contract, topics, _data) = e;
+        topics.len() == 2
+            && topics.get(0).unwrap().try_into_val(&env) == Ok(symbol_short!("oracle"))
+            && topics.get(1).unwrap().try_into_val(&env) == Ok(symbol_short!("heartbeat"))
+    });
+    assert!(
+        hb_event.is_some(),
+        "Heartbeat event must be emitted on update_oracle_heartbeat"
+    );
+}
+
+#[test]
+fn test_set_oracle_stale_threshold_admin_only() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (&admin, &oracle).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(&admin, &oracle);
+
+    // No admin auth for set_oracle_stale_threshold
+    let result = client.try_set_oracle_stale_threshold(&1800u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_oracle_stale_threshold_validation() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    // Below minimum (< 60)
+    let result = client.try_set_oracle_stale_threshold(&59u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidStaleThreshold)));
+
+    // Above maximum (> 86400)
+    let result = client.try_set_oracle_stale_threshold(&86_401u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidStaleThreshold)));
+
+    // Valid value
+    client.set_oracle_stale_threshold(&1800u64);
+    assert_eq!(client.get_oracle_stale_threshold(), 1800u64);
+}
+
+// ─── Oracle deviation guardrails tests ───────────────────────────────────────
+
+#[test]
+fn test_oracle_deviation_rejected_when_over_threshold() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin, &oracle);
+    client.create_round(&1_0000000u128, &None);
+    let round = client.get_active_round().unwrap();
+
+    // Set max deviation to 5% (500 bp)
+    client.set_oracle_max_deviation_bps(&Some(500u32));
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 12;
+        li.timestamp = 1000;
+    });
+
+    // 50% jump: diff_bps = 5000 > 500
+    let result = client.try_resolve_round(&OraclePayload {
+        price: 1_5000000u128,
+        timestamp: 900,
+        round_id: round.start_ledger,
+        nonce: 1u64,
+    });
+    assert_eq!(result, Err(Ok(ContractError::OracleDeviationExceeded)));
+}
+
+#[test]
+fn test_oracle_deviation_allows_at_exact_threshold() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin, &oracle);
+    client.create_round(&1_0000000u128, &None);
+    let round = client.get_active_round().unwrap();
+
+    // 5% (500 bp)
+    client.set_oracle_max_deviation_bps(&Some(500u32));
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 12;
+        li.timestamp = 1000;
+    });
+
+    // Exactly 5%: 1.00 -> 1.05 => diff_bps = 500
+    client.resolve_round(&OraclePayload {
+        price: 1_0500000u128,
+        timestamp: 900,
+        round_id: round.start_ledger,
+        nonce: 1u64,
+    });
+    assert_eq!(client.get_active_round(), None);
+}
+
+#[test]
+fn test_oracle_deviation_rounding_floor_is_deterministic() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin, &oracle);
+    // Start price 3, final 4 => diff_bps = floor(1*10000/3)=3333
+    client.create_round(&3u128, &None);
+    let round = client.get_active_round().unwrap();
+
+    client.set_oracle_max_deviation_bps(&Some(3333u32));
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 12;
+        li.timestamp = 1000;
+    });
+
+    // At threshold should pass
+    client.resolve_round(&OraclePayload {
+        price: 4u128,
+        timestamp: 900,
+        round_id: round.start_ledger,
+        nonce: 1u64,
+    });
+    assert_eq!(client.get_active_round(), None);
+}
+
+#[test]
+fn test_oracle_deviation_override_allows_over_threshold_and_emits_event() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin, &oracle);
+    client.create_round(&1_0000000u128, &None);
+    let round = client.get_active_round().unwrap();
+
+    client.set_oracle_max_deviation_bps(&Some(500u32)); // 5%
+    client.arm_oracle_deviation_override();
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 12;
+        li.timestamp = 1000;
+    });
+
+    client.resolve_round(&OraclePayload {
+        price: 2_0000000u128, // 100% jump
+        timestamp: 900,
+        round_id: round.start_ledger,
+        nonce: 1u64,
+    });
+
+    // Override is one-shot and must be cleared
+    env.as_contract(&contract_id, || {
+        let armed: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OracleDeviationOverrideArmed)
+            .unwrap_or(false);
+        assert!(!armed, "override must be cleared after use");
+    });
+
+    // Verify override event emitted
+    let events = env.events().all();
+    let override_event = events.iter().find(|e| {
+        let (_contract, topics, _data) = e;
+        topics.len() == 2
+            && topics.get(0).unwrap().try_into_val(&env) == Ok(symbol_short!("oracle"))
+            && topics.get(1).unwrap().try_into_val(&env) == Ok(symbol_short!("override"))
+    });
+    assert!(override_event.is_some(), "override event must be emitted");
+}
+
+#[test]
+fn test_oracle_liveness_custom_threshold() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    // Set a short 120 s threshold
+    client.set_oracle_stale_threshold(&120u64);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 0;
+    });
+    client.update_oracle_heartbeat(&0u32);
+
+    // 100 s later — within custom 120 s threshold
+    env.ledger().with_mut(|li| {
+        li.timestamp = 100;
+    });
+    assert!(client.is_oracle_live());
+
+    // 130 s later — beyond 120 s threshold
+    env.ledger().with_mut(|li| {
+        li.timestamp = 130;
+    });
+    assert!(!client.is_oracle_live());
 }
 
 /// Boundary nonces (0 and u64::MAX) are rejected on reuse for the same round.

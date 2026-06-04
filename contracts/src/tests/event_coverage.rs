@@ -1,12 +1,12 @@
 //! Event coverage and completeness verification tests (Issue #117).
 
 use crate::contract::{VirtualTokenContract, VirtualTokenContractClient};
-use crate::types::{BetSide, OraclePayload, RoundMode};
+use crate::types::{BetSide, OraclePayload};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger as _},
-    Address, Bytes, BytesN, Env, IntoVal, TryIntoVal,
+    Address, Bytes, BytesN, Env, TryIntoVal,
 };
 
 fn setup() -> (Env, Address, Address, VirtualTokenContractClient<'static>) {

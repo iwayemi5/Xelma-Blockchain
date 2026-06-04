@@ -219,6 +219,8 @@ Xelma-Blockchain/
 │       └── release/
 │           └── xelma_contract.wasm  # Compiled contract
 │
+├── docs/
+│   └── EVENT_SCHEMA.md        # Canonical on-chain event schema for indexers
 ├── SECURITY_REVIEW.md         # Comprehensive security audit
 ├── Cargo.toml                 # Workspace configuration
 └── README.md                  # This file
@@ -322,6 +324,8 @@ We take security seriously. The contract has undergone comprehensive hardening:
 
 All major state transitions emit standardized events for indexers and frontend consumers. Events follow a consistent format: `(topic_1, topic_2)` → `(payload...)`.
 
+> **Indexer reference**: See [docs/EVENT_SCHEMA.md](./docs/EVENT_SCHEMA.md) for the full canonical schema, field semantics, units, versioning strategy, and example decode mappings.
+
 ### Event Types:
 
 #### 1. Round Created
@@ -424,6 +428,42 @@ Payload: (
 
 **Use Case**: Track new users, display welcome messages, analytics.
 
+#### 8. Round Cancelled
+Emitted when admin cancels an active round; all stakes are refunded.
+
+```rust
+Topic: ("round", "cancelled")
+Payload: (
+  round_id: u64,   // Cancelled round
+  reason: u32,     // Admin-supplied reason code
+  pool_up: i128,   // Up-side pool at cancellation (stroops)
+  pool_down: i128  // Down-side pool at cancellation (stroops)
+)
+```
+
+#### 9. Round Fallback (insufficient participants)
+Emitted when a round ends below the minimum-participants threshold; all stakes are refunded.
+
+```rust
+Topic: ("round", "fallback")
+Payload: (
+  round_id: u64,          // Round that triggered the fallback
+  participant_count: u32, // Actual participant count
+  min_required: u32       // Configured minimum that was not met
+)
+```
+
+#### 10. Oracle Heartbeat
+Emitted when the oracle records an on-chain liveness heartbeat.
+
+```rust
+Topic: ("oracle", "heartbeat")
+Payload: (
+  timestamp: u64,  // Unix epoch seconds of the heartbeat
+  status: u32      // 0 = active, 1 = degraded, 2 = offline
+)
+```
+
 ### Event Consumption
 
 #### TypeScript Example (Frontend/Indexer):
@@ -493,6 +533,8 @@ async function watchForNewRounds(contractId: string) {
 - `initialize(admin, oracle)` - One-time contract setup
 - `create_round(start_price, mode)` - Start new betting round (mode: 0=Up/Down, 1=Precision)
 - `set_windows(bet_ledgers, run_ledgers)` - Configure round timing windows
+- `get_schema_version()` - Query the on-chain storage schema version
+- `migrate_schema_v1_to_v2()` - Admin-only migration helper for legacy deployments
 
 ### Oracle Functions:
 - `resolve_round(payload)` - Resolve round and trigger payouts (requires `OraclePayload` with price, timestamp, and round ID)
@@ -568,6 +610,7 @@ We welcome contributions from the community! Start with the maintainer workflow 
 - [CONTRIBUTING.md](./CONTRIBUTING.md)
 - [GOVERNANCE.md](./GOVERNANCE.md)
 - [SUPPORT.md](./SUPPORT.md)
+- [COMPATIBILITY_POLICY.md](./COMPATIBILITY_POLICY.md) — ABI/storage/event versioning rules
 - [CODEOWNERS](./.github/CODEOWNERS)
 
 Here's how you can help:
@@ -717,6 +760,26 @@ When making contract changes, update the following to keep this README in sync:
 - [ ] **Build artifact name** — if the crate name changes, update `Cargo.toml`, CI workflow, and the binding generation command
 - [ ] **SDK version** — after bumping `soroban-sdk`, update the Soroban badge and *Technical Stack* section
 - [ ] **Repository structure** — reflect any new source files or directories
+
+---
+
+## 🔄 Upgrade & Storage Schema Versioning
+
+The contract tracks an on-chain **storage schema version** to make upgrades auditable and migration-safe.
+
+- New deployments set `SchemaVersion = 2` deterministically during `initialize`.
+- If `SchemaVersion` is missing, the contract treats it as legacy **version 1** for compatibility.
+- If `SchemaVersion` is unknown or greater than what the contract supports, mutating entrypoints fail with `UnsupportedSchemaVersion`.
+
+### Migration (v1 → v2)
+
+For legacy deployments (no schema version set), operators can run:
+
+- `migrate_schema_v1_to_v2()`
+
+Guards:
+- Migration is blocked while a round is active (prevents partial state interpretation changes).
+- The migration emits `("schema","migrated")` with `(from_version, to_version)` for indexers.
 
 ---
 
