@@ -67,6 +67,10 @@ pub enum ContractError {
     ExposureCapExceeded = 29,
     /// Pending winnings accumulation would exceed the configured cap
     PendingWinningsCapExceeded = 30,
+    /// Start price is below the minimum allowed value
+    StartPriceTooLow = 31,
+    /// Start price exceeds the maximum allowed value
+    StartPriceTooHigh = 32,
     /// Oracle payload nonce was already consumed for this round (replay)
     OracleNonceReused = 31,
     /// Round has fewer participants than the configured minimum for competitive settlement
