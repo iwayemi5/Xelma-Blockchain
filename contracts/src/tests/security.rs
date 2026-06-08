@@ -5,8 +5,8 @@ use crate::errors::ContractError;
 use crate::types::{DataKey, OraclePayload};
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events, Ledger as _, TryIntoVal},
-    Address, Env, IntoVal,
+    testutils::{Address as _, Events, Ledger as _},
+    Address, Env, IntoVal, TryIntoVal,
 };
 
 #[test]

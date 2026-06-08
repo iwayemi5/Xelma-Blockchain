@@ -4,6 +4,7 @@ mod betting;
 mod chaos_recovery;
 mod cost_benchmarks;
 mod edge_cases;
+mod event_coverage;
 mod guard_tests;
 mod initialization;
 mod lifecycle;

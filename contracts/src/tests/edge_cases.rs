@@ -287,6 +287,7 @@ fn test_one_sided_pool_emits_event_and_refunds() {
         price: 2_0000000,
         timestamp: env.ledger().timestamp(),
         round_id: 0,
+        nonce: 1u64,
     });
 
     // Capture events immediately — each subsequent contract call resets the log.
@@ -334,6 +335,7 @@ fn test_one_sided_pool_down_side_emits_event_and_refunds() {
         price: 1_0000000,
         timestamp: env.ledger().timestamp(),
         round_id: 0,
+        nonce: 1u64,
     });
 
     // Capture events before subsequent contract calls reset the log.
@@ -381,6 +383,7 @@ fn test_two_sided_pool_does_not_emit_onesided_event() {
         price: 2_0000000,
         timestamp: env.ledger().timestamp(),
         round_id: 0,
+        nonce: 1u64,
     });
 
     let events = env.events().all();

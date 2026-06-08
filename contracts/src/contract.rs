@@ -1,11 +1,14 @@
 //! Core contract implementation for the XLM Price Prediction Market.
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, symbol_short, Address, Env, Map, Vec};
+use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, symbol_short, Address, Bytes, BytesN, Env, Map, Vec,
+};
 
 use crate::errors::ContractError;
 use crate::types::{
-    BetSide, DataKey, OracleHeartbeatRecord, OraclePayload, PrecisionPrediction, Round, RoundMode,
-    UserPosition, UserStats,
+    BetSide, DataKey, OracleHeartbeatRecord, OraclePayload, PrecisionCommitment,
+    PrecisionPrediction, Round, RoundMode, UserPosition, UserStats,
 };
 
 // ─── Economic control limits ─────────────────────────────────────────────────
@@ -288,10 +291,7 @@ impl VirtualTokenContract {
     ///
     /// - `None`: disables deviation guardrails
     /// - `Some(bps)`: enables guardrails with a threshold in basis points (1 bp = 0.01%)
-    pub fn set_oracle_max_deviation_bps(
-        env: Env,
-        bps: Option<u32>,
-    ) -> Result<(), ContractError> {
+    pub fn set_oracle_max_deviation_bps(env: Env, bps: Option<u32>) -> Result<(), ContractError> {
         let admin: Address = env
             .storage()
             .persistent()
@@ -317,7 +317,9 @@ impl VirtualTokenContract {
 
     /// Returns the configured oracle max deviation bps, if set.
     pub fn get_oracle_max_deviation_bps(env: Env) -> Option<u32> {
-        env.storage().persistent().get(&DataKey::OracleMaxDeviationBps)
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleMaxDeviationBps)
     }
 
     /// Arms a one-shot override to bypass deviation checks for the next settlement (admin only).
@@ -379,14 +381,11 @@ impl VirtualTokenContract {
     /// Returns `true` if the oracle has a non-stale heartbeat with status not offline (2).
     /// Uses the configured stale threshold, defaulting to 3600 seconds.
     pub fn is_oracle_live(env: Env) -> bool {
-        let record: OracleHeartbeatRecord = match env
-            .storage()
-            .persistent()
-            .get(&DataKey::OracleHeartbeat)
-        {
-            Some(r) => r,
-            None => return false,
-        };
+        let record: OracleHeartbeatRecord =
+            match env.storage().persistent().get(&DataKey::OracleHeartbeat) {
+                Some(r) => r,
+                None => return false,
+            };
         if record.status == 2 {
             return false;
         }
@@ -599,7 +598,9 @@ impl VirtualTokenContract {
             if v == 0 || v > MAX_MIN_PARTICIPANTS {
                 return Err(ContractError::InvalidMinParticipants);
             }
-            env.storage().persistent().set(&DataKey::MinParticipants, &v);
+            env.storage()
+                .persistent()
+                .set(&DataKey::MinParticipants, &v);
         } else {
             env.storage().persistent().remove(&DataKey::MinParticipants);
         }
@@ -830,7 +831,9 @@ impl VirtualTokenContract {
 
         // O(1) duplicate-prediction check — single composite key read
         let pred_key = DataKey::PrecisionPosition(round.round_id, user.clone());
-        if env.storage().persistent().has(&pred_key) {
+        let commit_key = DataKey::PrecisionCommitment(round.round_id, user.clone());
+        if env.storage().persistent().has(&pred_key) || env.storage().persistent().has(&commit_key)
+        {
             return Err(ContractError::AlreadyBet);
         }
 
@@ -881,6 +884,182 @@ impl VirtualTokenContract {
         amount: i128,
     ) -> Result<(), ContractError> {
         Self::place_precision_prediction(env, user, amount, guessed_price)
+    }
+
+    /// Commits a hashed prediction and stake amount (Precision mode only)
+    pub fn commit_prediction(
+        env: Env,
+        user: Address,
+        hash: BytesN<32>,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        user.require_auth();
+        Self::_ensure_not_paused(&env)?;
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidBetAmount);
+        }
+
+        // Enforce max stake cap
+        if let Some(max_stake) = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::MaxStake)
+        {
+            if amount > max_stake {
+                return Err(ContractError::StakeExceedsMax);
+            }
+        }
+
+        // Single read of the active round
+        let round: Round = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActiveRound)
+            .ok_or(ContractError::NoActiveRound)?;
+
+        // Enforce per-user round exposure cap
+        if let Some(max_exposure) = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::MaxUserRoundExposure)
+        {
+            if amount > max_exposure {
+                return Err(ContractError::ExposureCapExceeded);
+            }
+        }
+
+        // Verify round is in Precision mode
+        if round.mode != RoundMode::Precision {
+            return Err(ContractError::WrongModeForPrediction);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger >= round.bet_end_ledger {
+            return Err(ContractError::RoundEnded);
+        }
+
+        let user_balance = Self::balance(env.clone(), user.clone());
+        if user_balance < amount {
+            return Err(ContractError::InsufficientBalance);
+        }
+
+        // Check duplicate bet or commitment
+        let pred_key = DataKey::PrecisionPosition(round.round_id, user.clone());
+        let commit_key = DataKey::PrecisionCommitment(round.round_id, user.clone());
+        if env.storage().persistent().has(&pred_key) || env.storage().persistent().has(&commit_key)
+        {
+            return Err(ContractError::AlreadyBet);
+        }
+
+        // Deduct balance
+        let new_balance = user_balance
+            .checked_sub(amount)
+            .ok_or(ContractError::Overflow)?;
+        Self::_set_balance(&env, user.clone(), new_balance);
+
+        // Store commitment
+        let commitment = PrecisionCommitment {
+            hash: hash.clone(),
+            amount,
+            revealed: false,
+        };
+        env.storage().persistent().set(&commit_key, &commitment);
+
+        // Append to shared participant list
+        let participants_key = DataKey::RoundParticipants(round.round_id);
+        let mut participants: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&participants_key)
+            .unwrap_or(Vec::new(&env));
+        participants.push_back(user.clone());
+        env.storage()
+            .persistent()
+            .set(&participants_key, &participants);
+
+        // Emit commit prediction event
+        #[allow(deprecated)]
+        env.events().publish(
+            (symbol_short!("commit"), symbol_short!("predict")),
+            (user, round.round_id, hash, amount),
+        );
+
+        Ok(())
+    }
+
+    /// Reveals a previously committed prediction (Precision mode only)
+    pub fn reveal_prediction(
+        env: Env,
+        user: Address,
+        predicted_price: u128,
+        salt: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        user.require_auth();
+        Self::_ensure_not_paused(&env)?;
+
+        // Single read of the active round
+        let round: Round = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActiveRound)
+            .ok_or(ContractError::NoActiveRound)?;
+
+        // Verify round is in Precision mode
+        if round.mode != RoundMode::Precision {
+            return Err(ContractError::WrongModeForPrediction);
+        }
+
+        // Enforce reveal window: bet_end_ledger <= ledger < end_ledger
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < round.bet_end_ledger || current_ledger >= round.end_ledger {
+            return Err(ContractError::InvalidRevealWindow);
+        }
+
+        // Retrieve commitment
+        let commit_key = DataKey::PrecisionCommitment(round.round_id, user.clone());
+        let mut commitment: PrecisionCommitment = env
+            .storage()
+            .persistent()
+            .get(&commit_key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        if commitment.revealed {
+            return Err(ContractError::AlreadyRevealed);
+        }
+
+        // Verify hash
+        let mut preimage = Bytes::new(&env);
+        preimage.append(&predicted_price.to_xdr(&env));
+        preimage.append(&salt.to_xdr(&env));
+        let computed_hash = env.crypto().sha256(&preimage);
+        let computed_hash_bytes: BytesN<32> = computed_hash.into();
+
+        if computed_hash_bytes != commitment.hash {
+            return Err(ContractError::HashMismatch);
+        }
+
+        // Mark revealed and write
+        commitment.revealed = true;
+        env.storage().persistent().set(&commit_key, &commitment);
+
+        // Store prediction for resolution
+        let pred_key = DataKey::PrecisionPosition(round.round_id, user.clone());
+        let prediction = PrecisionPrediction {
+            user: user.clone(),
+            predicted_price,
+            amount: commitment.amount,
+        };
+        env.storage().persistent().set(&pred_key, &prediction);
+
+        // Emit reveal prediction event
+        #[allow(deprecated)]
+        env.events().publish(
+            (symbol_short!("reveal"), symbol_short!("predict")),
+            (user, round.round_id, predicted_price, commitment.amount),
+        );
+
+        Ok(())
     }
 
     /// Returns user's position in the current round (Up/Down mode).
@@ -1215,7 +1394,10 @@ impl VirtualTokenContract {
                     .remove(&DataKey::Position(round_id, user.clone()));
                 env.storage()
                     .persistent()
-                    .remove(&DataKey::PrecisionPosition(round_id, user));
+                    .remove(&DataKey::PrecisionPosition(round_id, user.clone()));
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::PrecisionCommitment(round_id, user));
             }
         }
         env.storage()
@@ -1264,6 +1446,7 @@ impl VirtualTokenContract {
             .persistent()
             .get(&DataKey::RoundParticipants(round.round_id))
             .unwrap_or(Vec::new(env));
+        let participants = Self::sort_addresses(participants);
 
         let price_went_up = final_price > round.price_start;
         let price_went_down = final_price < round.price_start;
@@ -1393,11 +1576,12 @@ impl VirtualTokenContract {
         round_id: u64,
         final_price: u128,
     ) -> Result<(), ContractError> {
-        let participants: Vec<Address> = env
+        let mut participants: Vec<Address> = env
             .storage()
             .persistent()
             .get(&DataKey::RoundParticipants(round_id))
             .unwrap_or(Vec::new(env));
+        participants = Self::sort_addresses(participants);
 
         if participants.is_empty() {
             // Migration fallback to legacy bulk map
@@ -1421,15 +1605,32 @@ impl VirtualTokenContract {
         for i in 0..participants.len() {
             if let Some(user) = participants.get(i) {
                 let pred_key = DataKey::PrecisionPosition(round_id, user.clone());
-                if let Some(pred) = env
+                let commit_key = DataKey::PrecisionCommitment(round_id, user.clone());
+
+                let pred_opt = env
                     .storage()
                     .persistent()
-                    .get::<_, PrecisionPrediction>(&pred_key)
-                {
-                    total_pot = total_pot
-                        .checked_add(pred.amount)
-                        .ok_or(ContractError::Overflow)?;
+                    .get::<_, PrecisionPrediction>(&pred_key);
 
+                let commitment_opt = env
+                    .storage()
+                    .persistent()
+                    .get::<_, PrecisionCommitment>(&commit_key);
+
+                // Add amount to total pot from prediction (revealed) or commitment (unrevealed)
+                let amount = if let Some(ref pred) = pred_opt {
+                    pred.amount
+                } else if let Some(ref commit) = commitment_opt {
+                    commit.amount
+                } else {
+                    0
+                };
+
+                total_pot = total_pot
+                    .checked_add(amount)
+                    .ok_or(ContractError::Overflow)?;
+
+                if let Some(pred) = pred_opt {
                     let diff = if pred.predicted_price >= final_price {
                         pred.predicted_price
                             .checked_sub(final_price)
@@ -1460,10 +1661,10 @@ impl VirtualTokenContract {
         }
 
         // Distribute winnings to winner(s).
-        // Remainder policy: `participants` is a `Vec<Address>` appended in bet-placement
-        // order; `winners` is built from that same single pass, so index 0 is always the
-        // first-to-bet winner. Any integer remainder from the even split is assigned to
-        // that winner, making the distribution fully deterministic for a given round.
+        // Remainder policy: `participants` is sorted lexicographically; `winners` is built
+        // in that same sorted order, so index 0 is always the winner with the lowest Address.
+        // Any integer remainder from the even split is assigned to that winner, making the
+        // distribution fully deterministic.
         if !winners.is_empty() && total_pot > 0 {
             let winner_count = winners.len() as i128;
             let payout_per_winner = total_pot / winner_count;
@@ -1639,14 +1840,28 @@ impl VirtualTokenContract {
                 for i in 0..participants.len() {
                     if let Some(user) = participants.get(i) {
                         let pred_key = DataKey::PrecisionPosition(round_id, user.clone());
+                        let commit_key = DataKey::PrecisionCommitment(round_id, user.clone());
+
+                        let mut refund_amount = 0;
                         if let Some(pred) = env
                             .storage()
                             .persistent()
                             .get::<_, PrecisionPrediction>(&pred_key)
                         {
-                            Self::_accumulate_pending(&env, user, pred.amount)?;
-                            env.storage().persistent().remove(&pred_key);
+                            refund_amount = pred.amount;
+                        } else if let Some(commit) = env
+                            .storage()
+                            .persistent()
+                            .get::<_, PrecisionCommitment>(&commit_key)
+                        {
+                            refund_amount = commit.amount;
                         }
+
+                        if refund_amount > 0 {
+                            Self::_accumulate_pending(&env, user.clone(), refund_amount)?;
+                        }
+                        env.storage().persistent().remove(&pred_key);
+                        env.storage().persistent().remove(&commit_key);
                     }
                 }
             }
@@ -1824,7 +2039,9 @@ impl VirtualTokenContract {
         env.storage().persistent().remove(&DataKey::ActiveRound);
         env.storage().persistent().remove(&DataKey::Positions);
         env.storage().persistent().remove(&DataKey::UpDownPositions);
-        env.storage().persistent().remove(&DataKey::PrecisionPositions);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PrecisionPositions);
         Ok(())
     }
 
@@ -1983,5 +2200,23 @@ impl VirtualTokenContract {
 
         env.storage().persistent().set(&key, &new_pending);
         Ok(())
+    }
+
+    fn sort_addresses(addresses: Vec<Address>) -> Vec<Address> {
+        let mut sorted = Vec::new(addresses.env());
+        for addr in addresses.iter() {
+            let mut inserted = false;
+            for i in 0..sorted.len() {
+                if addr < sorted.get_unchecked(i) {
+                    sorted.insert(i, addr.clone());
+                    inserted = true;
+                    break;
+                }
+            }
+            if !inserted {
+                sorted.push_back(addr);
+            }
+        }
+        sorted
     }
 }
