@@ -882,10 +882,6 @@ fn test_caps_disabled_precision_prediction_succeeds() {
 
 #[test]
 fn test_default_precision_participant_cap_allows_predictions_below_cap() {
-fn test_precision_commit_reveal_happy_path() {
-    use soroban_sdk::xdr::ToXdr;
-    use soroban_sdk::{Bytes, BytesN};
-
     let env = Env::default();
     let contract_id = env.register(VirtualTokenContract, ());
     let client = VirtualTokenContractClient::new(&env, &contract_id);
@@ -907,7 +903,21 @@ fn test_precision_commit_reveal_happy_path() {
 }
 
 #[test]
-fn test_custom_precision_participant_cap_boundary_and_over_cap() {
+fn test_precision_commit_reveal_happy_path() {
+    use soroban_sdk::xdr::ToXdr;
+    use soroban_sdk::{Bytes, BytesN};
+
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&user);
     client.create_round(&1_0000000, &Some(1)); // Precision mode
 
     let price = 2297u128;
@@ -937,10 +947,7 @@ fn test_custom_precision_participant_cap_boundary_and_over_cap() {
 }
 
 #[test]
-fn test_precision_commit_reveal_already_revealed() {
-    use soroban_sdk::xdr::ToXdr;
-    use soroban_sdk::{Bytes, BytesN};
-
+fn test_custom_precision_participant_cap_boundary_and_over_cap() {
     let env = Env::default();
     let contract_id = env.register(VirtualTokenContract, ());
     let client = VirtualTokenContractClient::new(&env, &contract_id);
@@ -972,7 +979,16 @@ fn test_precision_commit_reveal_already_revealed() {
 }
 
 #[test]
-fn test_set_max_precision_participants_validation() {
+fn test_precision_commit_reveal_already_revealed() {
+    use soroban_sdk::xdr::ToXdr;
+    use soroban_sdk::{Bytes, BytesN};
+
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
     let user = Address::generate(&env);
 
     env.mock_all_auths();
@@ -1002,10 +1018,7 @@ fn test_set_max_precision_participants_validation() {
 }
 
 #[test]
-fn test_precision_commit_reveal_hash_mismatch() {
-    use soroban_sdk::xdr::ToXdr;
-    use soroban_sdk::{Bytes, BytesN};
-
+fn test_set_max_precision_participants_validation() {
     let env = Env::default();
     let contract_id = env.register(VirtualTokenContract, ());
     let client = VirtualTokenContractClient::new(&env, &contract_id);
@@ -1027,6 +1040,19 @@ fn test_precision_commit_reveal_hash_mismatch() {
 
     client.set_max_precision_participants(&3u32);
     assert_eq!(client.get_max_precision_participants(), 3u32);
+}
+
+#[test]
+fn test_precision_commit_reveal_hash_mismatch() {
+    use soroban_sdk::xdr::ToXdr;
+    use soroban_sdk::{Bytes, BytesN};
+
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
     let user = Address::generate(&env);
 
     env.mock_all_auths();

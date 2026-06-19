@@ -640,16 +640,6 @@ fn test_oracle_deviation_override_allows_over_threshold_and_emits_event() {
         nonce: 1u64,
     });
 
-    // Override is one-shot and must be cleared
-    env.as_contract(&contract_id, || {
-        let armed: bool = env
-            .storage()
-            .persistent()
-            .get(&DataKey::OracleDeviationOverrideArmed)
-            .unwrap_or(false);
-        assert!(!armed, "override must be cleared after use");
-    });
-
     // Verify override event emitted
     let events = env.events().all();
     let override_event = events.iter().find(|e| {
@@ -659,6 +649,16 @@ fn test_oracle_deviation_override_allows_over_threshold_and_emits_event() {
             && topics.get(1).unwrap().try_into_val(&env) == Ok(symbol_short!("override"))
     });
     assert!(override_event.is_some(), "override event must be emitted");
+
+    // Override is one-shot and must be cleared
+    env.as_contract(&contract_id, || {
+        let armed: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OracleDeviationOverrideArmed)
+            .unwrap_or(false);
+        assert!(!armed, "override must be cleared after use");
+    });
 }
 
 #[test]
