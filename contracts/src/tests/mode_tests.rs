@@ -1213,3 +1213,288 @@ fn test_precision_commit_reveal_double_bet_fails() {
     let result = client.try_place_precision_prediction(&user, &50_0000000, &2297);
     assert_eq!(result, Err(Ok(ContractError::AlreadyBet)));
 }
+#[test]
+fn test_precision_predictions_page_ordering_matches_full_read() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+    client.mint_initial(&bob);
+    client.mint_initial(&carol);
+
+    client.create_round(&1_0000000, &Some(1));
+    client.place_precision_prediction(&alice, &100_0000000, &2297);
+    client.place_precision_prediction(&bob, &150_0000000, &2500);
+    client.place_precision_prediction(&carol, &200_0000000, &2600);
+
+    // A full page (offset 0, limit >= total) must return the same set of
+    // users as the unpaginated full-read method.
+    let page = client.get_precision_predictions_page(&0, &10);
+    let full = client.get_precision_predictions();
+    assert_eq!(page.len(), full.len());
+    assert_eq!(page.len(), 3);
+
+    let mut page_users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for p in page.iter() {
+        page_users.push_back(p.user.clone());
+    }
+    // Page must be sorted ascending by address (deterministic order).
+    for i in 1..page_users.len() {
+        assert!(
+            page_users.get(i - 1).unwrap() < page_users.get(i).unwrap(),
+            "page must be sorted in ascending address order"
+        );
+    }
+}
+
+#[test]
+fn test_precision_predictions_page_respects_offset_and_limit() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+    client.mint_initial(&bob);
+    client.mint_initial(&carol);
+
+    client.create_round(&1_0000000, &Some(1));
+    client.place_precision_prediction(&alice, &100_0000000, &2297);
+    client.place_precision_prediction(&bob, &150_0000000, &2500);
+    client.place_precision_prediction(&carol, &200_0000000, &2600);
+
+    // limit=1 must return exactly one entry per page, and consecutive pages
+    // (offset 0, 1, 2) must together cover all three participants with no
+    // overlap and no gaps.
+    let page0 = client.get_precision_predictions_page(&0, &1);
+    let page1 = client.get_precision_predictions_page(&1, &1);
+    let page2 = client.get_precision_predictions_page(&2, &1);
+
+    assert_eq!(page0.len(), 1);
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page2.len(), 1);
+
+    let u0 = page0.get(0).unwrap().user;
+    let u1 = page1.get(0).unwrap().user;
+    let u2 = page2.get(0).unwrap().user;
+
+    assert_ne!(u0, u1);
+    assert_ne!(u1, u2);
+    assert_ne!(u0, u2);
+    assert!(
+        u0 < u1 && u1 < u2,
+        "pages must be in ascending address order"
+    );
+}
+
+#[test]
+fn test_precision_predictions_page_offset_past_end_is_empty() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+
+    client.create_round(&1_0000000, &Some(1));
+    client.place_precision_prediction(&alice, &100_0000000, &2297);
+
+    // offset == total must yield an empty page, not an error.
+    let page_at_end = client.get_precision_predictions_page(&1, &10);
+    assert_eq!(page_at_end.len(), 0);
+
+    // offset far past total must also yield an empty page.
+    let page_far_past = client.get_precision_predictions_page(&999, &10);
+    assert_eq!(page_far_past.len(), 0);
+}
+
+#[test]
+fn test_precision_predictions_page_zero_limit_is_empty() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+
+    client.create_round(&1_0000000, &Some(1));
+    client.place_precision_prediction(&alice, &100_0000000, &2297);
+
+    let page = client.get_precision_predictions_page(&0, &0);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_precision_predictions_page_no_active_round_is_empty() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    // No round created at all.
+    let page = client.get_precision_predictions_page(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_updown_positions_page_respects_offset_and_limit() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+    client.mint_initial(&bob);
+    client.mint_initial(&carol);
+
+    client.create_round(&1_0000000, &Some(0));
+    client.place_bet(&alice, &100_0000000, &BetSide::Up);
+    client.place_bet(&bob, &150_0000000, &BetSide::Down);
+    client.place_bet(&carol, &200_0000000, &BetSide::Up);
+
+    let full_page = client.get_updown_positions_page(&0, &10);
+    assert_eq!(full_page.len(), 3);
+
+    let mut page_users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for (user, _pos) in full_page.iter() {
+        page_users.push_back(user.clone());
+    }
+    for i in 1..page_users.len() {
+        assert!(
+            page_users.get(i - 1).unwrap() < page_users.get(i).unwrap(),
+            "page must be sorted in ascending address order"
+        );
+    }
+
+    // Single-entry pages must partition the full set with no overlap.
+    let page0 = client.get_updown_positions_page(&0, &1);
+    let page1 = client.get_updown_positions_page(&1, &1);
+    let page2 = client.get_updown_positions_page(&2, &1);
+    assert_eq!(page0.len(), 1);
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page2.len(), 1);
+
+    let (u0, pos0) = page0.get(0).unwrap();
+    let (u1, _) = page1.get(0).unwrap();
+    let (u2, _) = page2.get(0).unwrap();
+    assert!(u0 < u1 && u1 < u2);
+
+    // Verify the position data itself is correct, not just the address.
+    if u0 == alice {
+        assert_eq!(pos0.amount, 100_0000000);
+        assert_eq!(pos0.side, BetSide::Up);
+    } else if u0 == bob {
+        assert_eq!(pos0.amount, 150_0000000);
+        assert_eq!(pos0.side, BetSide::Down);
+    } else if u0 == carol {
+        assert_eq!(pos0.amount, 200_0000000);
+        assert_eq!(pos0.side, BetSide::Up);
+    }
+}
+
+#[test]
+fn test_updown_positions_page_offset_past_end_is_empty() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+
+    client.create_round(&1_0000000, &Some(0));
+    client.place_bet(&alice, &100_0000000, &BetSide::Up);
+
+    let page_at_end = client.get_updown_positions_page(&1, &10);
+    assert_eq!(page_at_end.len(), 0);
+
+    let page_far_past = client.get_updown_positions_page(&500, &10);
+    assert_eq!(page_far_past.len(), 0);
+}
+
+#[test]
+fn test_updown_positions_page_zero_limit_is_empty() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+
+    client.create_round(&1_0000000, &Some(0));
+    client.place_bet(&alice, &100_0000000, &BetSide::Up);
+
+    let page = client.get_updown_positions_page(&0, &0);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_updown_positions_page_no_active_round_is_empty() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+
+    let page = client.get_updown_positions_page(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_precision_predictions_page_limit_is_capped_at_max_page_size() {
+    let env = Env::default();
+    let contract_id = env.register(VirtualTokenContract, ());
+    let client = VirtualTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle);
+    client.mint_initial(&alice);
+    client.mint_initial(&bob);
+
+    client.create_round(&1_0000000, &Some(1));
+    client.place_precision_prediction(&alice, &100_0000000, &2297);
+    client.place_precision_prediction(&bob, &150_0000000, &2500);
+
+    // Requesting an enormous limit must not panic or attempt to over-read;
+    // it should simply be capped and return at most the available entries
+    // (which here is fewer than MAX_PAGE_SIZE anyway, so this also proves
+    // the cap doesn't break normal small-round behavior).
+    let page = client.get_precision_predictions_page(&0, &1_000_000);
+    assert_eq!(page.len(), 2);
+}

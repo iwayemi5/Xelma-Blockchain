@@ -19,6 +19,9 @@ const MIN_CAP_VALUE: i128 = 1;
 const MAX_MIN_PARTICIPANTS: u32 = 10_000;
 const DEFAULT_MAX_PRECISION_PARTICIPANTS: u32 = 1_000;
 const MAX_PRECISION_PARTICIPANTS_LIMIT: u32 = 10_000;
+/// Maximum number of entries returned per page by paginated query methods,
+/// regardless of the caller-requested `limit` (Issue #139).
+const MAX_PAGE_SIZE: u32 = 100;
 
 // ─── Oracle heartbeat limits ──────────────────────────────────────────────────
 const DEFAULT_ORACLE_STALE_THRESHOLD: u64 = 3_600; // 1 hour
@@ -144,10 +147,7 @@ impl VirtualTokenContract {
     pub fn is_paused(env: Env) -> bool {
         let key = DataKey::Paused;
         Self::_extend_persistent_ttl(&env, &key);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(false)
+        env.storage().persistent().get(&key).unwrap_or(false)
     }
 
     /// Pauses the contract for emergency recovery (admin only)
@@ -390,14 +390,10 @@ impl VirtualTokenContract {
             if v == 0 || v > MAX_ORACLE_DEVIATION_BPS {
                 return Err(ContractError::InvalidOracleDeviationBps);
             }
-            env.storage()
-                .persistent()
-                .set(&deviation_key, &v);
+            env.storage().persistent().set(&deviation_key, &v);
             Self::_extend_persistent_ttl(&env, &deviation_key);
         } else {
-            env.storage()
-                .persistent()
-                .remove(&deviation_key);
+            env.storage().persistent().remove(&deviation_key);
         }
         Ok(())
     }
@@ -406,9 +402,7 @@ impl VirtualTokenContract {
     pub fn get_oracle_max_deviation_bps(env: Env) -> Option<u32> {
         let key = DataKey::OracleMaxDeviationBps;
         Self::_extend_persistent_ttl(&env, &key);
-        env.storage()
-            .persistent()
-            .get(&key)
+        env.storage().persistent().get(&key)
     }
 
     /// Arms a one-shot override to bypass deviation checks for the next settlement (admin only).
@@ -425,9 +419,7 @@ impl VirtualTokenContract {
         Self::_ensure_not_paused(&env)?;
 
         let override_key = DataKey::OracleDeviationOverrideArmed;
-        env.storage()
-            .persistent()
-            .set(&override_key, &true);
+        env.storage().persistent().set(&override_key, &true);
         Self::_extend_persistent_ttl(&env, &override_key);
         Ok(())
     }
@@ -480,11 +472,10 @@ impl VirtualTokenContract {
     pub fn is_oracle_live(env: Env) -> bool {
         let heartbeat_key = DataKey::OracleHeartbeat;
         Self::_extend_persistent_ttl(&env, &heartbeat_key);
-        let record: OracleHeartbeatRecord =
-            match env.storage().persistent().get(&heartbeat_key) {
-                Some(r) => r,
-                None => return false,
-            };
+        let record: OracleHeartbeatRecord = match env.storage().persistent().get(&heartbeat_key) {
+            Some(r) => r,
+            None => return false,
+        };
         if record.status == 2 {
             return false;
         }
@@ -515,9 +506,7 @@ impl VirtualTokenContract {
             return Err(ContractError::InvalidStaleThreshold);
         }
         let key = DataKey::OracleStaleThreshold;
-        env.storage()
-            .persistent()
-            .set(&key, &seconds);
+        env.storage().persistent().set(&key, &seconds);
         Self::_extend_persistent_ttl(&env, &key);
         Ok(())
     }
@@ -634,14 +623,10 @@ impl VirtualTokenContract {
             if v < MIN_CAP_VALUE {
                 return Err(ContractError::InvalidBetAmount);
             }
-            env.storage()
-                .persistent()
-                .set(&key, &v);
+            env.storage().persistent().set(&key, &v);
             Self::_extend_persistent_ttl(&env, &key);
         } else {
-            env.storage()
-                .persistent()
-                .remove(&key);
+            env.storage().persistent().remove(&key);
         }
         Ok(())
     }
@@ -650,9 +635,7 @@ impl VirtualTokenContract {
     pub fn get_max_user_exposure(env: Env) -> Option<i128> {
         let key = DataKey::MaxUserRoundExposure;
         Self::_extend_persistent_ttl(&env, &key);
-        env.storage()
-            .persistent()
-            .get(&key)
+        env.storage().persistent().get(&key)
     }
 
     // ─── Accounting safety (Issue #120) ─────────────────────────────────────
@@ -677,14 +660,10 @@ impl VirtualTokenContract {
             if v < MIN_CAP_VALUE {
                 return Err(ContractError::InvalidBetAmount);
             }
-            env.storage()
-                .persistent()
-                .set(&key, &v);
+            env.storage().persistent().set(&key, &v);
             Self::_extend_persistent_ttl(&env, &key);
         } else {
-            env.storage()
-                .persistent()
-                .remove(&key);
+            env.storage().persistent().remove(&key);
         }
         Ok(())
     }
@@ -716,9 +695,7 @@ impl VirtualTokenContract {
             if v == 0 || v > MAX_MIN_PARTICIPANTS {
                 return Err(ContractError::InvalidMinParticipants);
             }
-            env.storage()
-                .persistent()
-                .set(&key, &v);
+            env.storage().persistent().set(&key, &v);
             Self::_extend_persistent_ttl(&env, &key);
         } else {
             env.storage().persistent().remove(&key);
@@ -750,9 +727,7 @@ impl VirtualTokenContract {
         }
 
         let key = DataKey::MaxPrecisionParticipants;
-        env.storage()
-            .persistent()
-            .set(&key, &max);
+        env.storage().persistent().set(&key, &max);
         Self::_extend_persistent_ttl(&env, &key);
         Ok(())
     }
@@ -1364,6 +1339,125 @@ impl VirtualTokenContract {
                 .get(&DataKey::UpDownPositions)
                 .unwrap_or(Map::new(&env));
         }
+        result
+    }
+    // ─── Pagination (Issue #139) ─────────────────────────────────────────────
+
+    /// Returns a deterministic slice of Precision-mode predictions for the
+    /// active round, ordered by ascending participant address (the same
+    /// canonical order used internally for payout-remainder assignment).
+    ///
+    /// `offset` is the zero-based index into the ordered participant list.
+    /// `limit` is the maximum number of entries to return and is capped at
+    /// `MAX_PAGE_SIZE` to bound gas/read costs regardless of caller input.
+    ///
+    /// Returns an empty `Vec` if there is no active round, if `offset` is
+    /// beyond the number of available entries, or if `limit` is zero — this
+    /// is not an error condition, matching standard pagination semantics
+    /// (asking past the end of a list yields an empty page, not a fault).
+    ///
+    /// This does not replace [`Self::get_precision_predictions`], which
+    /// remains available unchanged for full-set reads on small rounds.
+    pub fn get_precision_predictions_page(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<PrecisionPrediction> {
+        let limit = limit.min(MAX_PAGE_SIZE);
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let round = match env
+            .storage()
+            .persistent()
+            .get::<_, Round>(&DataKey::ActiveRound)
+        {
+            Some(r) => r,
+            None => return Vec::new(&env),
+        };
+
+        let participants: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RoundParticipants(round.round_id))
+            .unwrap_or(Vec::new(&env));
+        let participants = Self::sort_addresses(participants);
+
+        let total = participants.len();
+        if offset >= total {
+            return Vec::new(&env);
+        }
+
+        let end = offset.saturating_add(limit).min(total);
+
+        let mut result: Vec<PrecisionPrediction> = Vec::new(&env);
+        for i in offset..end {
+            if let Some(user) = participants.get(i) {
+                let pred_key = DataKey::PrecisionPosition(round.round_id, user.clone());
+                if let Some(pred) = env.storage().persistent().get(&pred_key) {
+                    result.push_back(pred);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Returns a deterministic slice of Up/Down positions for the active
+    /// round, ordered by ascending participant address, as `(Address,
+    /// UserPosition)` pairs.
+    ///
+    /// A `Vec` of pairs is used instead of a `Map` because pagination over a
+    /// `Map` has no stable, caller-controllable slice semantics in Soroban —
+    /// pairs preserve the exact offset/limit window the caller requested.
+    ///
+    /// See [`Self::get_precision_predictions_page`] for the offset/limit/empty-page
+    /// contract, which is identical here. This does not replace
+    /// [`Self::get_updown_positions`], which remains available unchanged.
+    pub fn get_updown_positions_page(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<(Address, UserPosition)> {
+        let limit = limit.min(MAX_PAGE_SIZE);
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let round = match env
+            .storage()
+            .persistent()
+            .get::<_, Round>(&DataKey::ActiveRound)
+        {
+            Some(r) => r,
+            None => return Vec::new(&env),
+        };
+
+        let participants: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RoundParticipants(round.round_id))
+            .unwrap_or(Vec::new(&env));
+        let participants = Self::sort_addresses(participants);
+
+        let total = participants.len();
+        if offset >= total {
+            return Vec::new(&env);
+        }
+
+        let end = offset.saturating_add(limit).min(total);
+
+        let mut result: Vec<(Address, UserPosition)> = Vec::new(&env);
+        for i in offset..end {
+            if let Some(user) = participants.get(i) {
+                let pos_key = DataKey::Position(round.round_id, user.clone());
+                if let Some(pos) = env.storage().persistent().get(&pos_key) {
+                    result.push_back((user, pos));
+                }
+            }
+        }
+
         result
     }
 
