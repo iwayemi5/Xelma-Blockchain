@@ -66,7 +66,7 @@ fn test_apply_scheduled_windows_happy_path() {
         .unwrap();
 
     let early = client.try_apply_scheduled_changes(&ConfigChangeKind::Windows);
-    assert_eq!(early, Err(Ok(ContractError::ConfigChangeNotReady)));
+    assert_eq!(early, Err(Ok(ContractError::RoundNotEnded)));
 
     advance_to_activation(&env, pending.activation_ledger);
     client.apply_scheduled_changes(&ConfigChangeKind::Windows);
@@ -102,7 +102,7 @@ fn test_cancel_scheduled_change_removes_pending() {
     let apply_after_cancel = client.try_apply_scheduled_changes(&ConfigChangeKind::Windows);
     assert_eq!(
         apply_after_cancel,
-        Err(Ok(ContractError::NoPendingConfigChange))
+        Err(Ok(ContractError::CommitmentNotFound))
     );
 }
 
@@ -259,7 +259,7 @@ fn test_apply_scheduled_max_user_exposure_early_apply_fails() {
 
     client.schedule_max_user_exposure(&Some(100_0000000));
     let result = client.try_apply_scheduled_changes(&ConfigChangeKind::MaxUserRoundExposure);
-    assert_eq!(result, Err(Ok(ContractError::ConfigChangeNotReady)));
+    assert_eq!(result, Err(Ok(ContractError::RoundNotEnded)));
     assert!(client.get_max_user_exposure().is_none());
 }
 

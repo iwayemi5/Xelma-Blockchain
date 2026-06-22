@@ -92,7 +92,7 @@ export interface PendingConfigChange {
  * Legacy single-key maps (`UpDownPositions`, `PrecisionPositions`) are kept for
  * backward-compatible reads during a migration window; they are no longer written.
  */
-export type DataKey = {tag: "Balance", values: readonly [string]} | {tag: "Admin", values: void} | {tag: "Oracle", values: void} | {tag: "SchemaVersion", values: void} | {tag: "ActiveRound", values: void} | {tag: "Positions", values: void} | {tag: "UpDownPositions", values: void} | {tag: "PrecisionPositions", values: void} | {tag: "PendingWinnings", values: readonly [string]} | {tag: "UserStats", values: readonly [string]} | {tag: "Paused", values: void} | {tag: "BetWindowLedgers", values: void} | {tag: "RunWindowLedgers", values: void} | {tag: "LastRoundId", values: void} | {tag: "Position", values: readonly [u64, string]} | {tag: "PrecisionPosition", values: readonly [u64, string]} | {tag: "PrecisionCommitment", values: readonly [u64, string]} | {tag: "RoundParticipants", values: readonly [u64]} | {tag: "MaxStake", values: void} | {tag: "MaxUserRoundExposure", values: void} | {tag: "MaxPendingWinnings", values: void} | {tag: "CancelledRound", values: readonly [u64]} | {tag: "ConsumedOracleNonce", values: readonly [u64, u64]} | {tag: "MinParticipants", values: void} | {tag: "OracleHeartbeat", values: void} | {tag: "OracleStaleThreshold", values: void} | {tag: "MaxPrecisionParticipants", values: void} | {tag: "OracleMaxDeviationBps", values: void} | {tag: "OracleDeviationOverrideArmed", values: void} | {tag: "ArchivedRound", values: readonly [u64]} | {tag: "RecentArchivedRoundIds", values: void};
+export type DataKey = {tag: "Balance", values: readonly [string]} | {tag: "Admin", values: void} | {tag: "Oracle", values: void} | {tag: "SchemaVersion", values: void} | {tag: "ActiveRound", values: void} | {tag: "Positions", values: void} | {tag: "UpDownPositions", values: void} | {tag: "PrecisionPositions", values: void} | {tag: "PendingWinnings", values: readonly [string]} | {tag: "UserStats", values: readonly [string]} | {tag: "Paused", values: void} | {tag: "BetWindowLedgers", values: void} | {tag: "RunWindowLedgers", values: void} | {tag: "LastRoundId", values: void} | {tag: "Position", values: readonly [u64, string]} | {tag: "PrecisionPosition", values: readonly [u64, string]} | {tag: "PrecisionCommitment", values: readonly [u64, string]} | {tag: "RoundParticipants", values: readonly [u64]} | {tag: "MaxStake", values: void} | {tag: "MaxUserRoundExposure", values: void} | {tag: "MaxPendingWinnings", values: void} | {tag: "CancelledRound", values: readonly [u64]} | {tag: "ConsumedOracleNonce", values: readonly [u64, u64]} | {tag: "MinParticipants", values: void} | {tag: "OracleHeartbeat", values: void} | {tag: "OracleStaleThreshold", values: void} | {tag: "MaxPrecisionParticipants", values: void} | {tag: "OracleMaxDeviationBps", values: void} | {tag: "OracleDeviationOverrideArmed", values: void} | {tag: "ArchivedRound", values: readonly [u64]} | {tag: "RecentArchivedRoundIds", values: void} | {tag: "PendingConfigChange", values: readonly [ConfigChangeKind]};
 
 /**
  * Round mode for prediction type
@@ -738,6 +738,40 @@ export interface Client {
    */
   set_max_precision_participants: ({max}: {max: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
+  /**
+   * Construct and simulate a get_precision_predictions_page transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns a paginated slice of precision predictions for the active round.
+   */
+  get_precision_predictions_page: ({offset, limit}: {offset: u32, limit: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Array<PrecisionPrediction>>>
+
+  /**
+   * Construct and simulate a get_updown_positions_page transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns a paginated slice of Up/Down positions for the active round.
+   */
+  get_updown_positions_page: ({offset, limit}: {offset: u32, limit: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Array<readonly [string, UserPosition]>>>
+
+  /**
+   * Construct and simulate a schedule_windows transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Schedules a timelocked update to betting and execution windows (admin only).
+   */
+  schedule_windows: ({bet_ledgers, run_ledgers}: {bet_ledgers: u32, run_ledgers: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  schedule_max_stake: ({max_amount}: {max_amount: Option<i128>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  schedule_max_user_exposure: ({max_exposure}: {max_exposure: Option<i128>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  schedule_max_pending_winnings: ({max_pending}: {max_pending: Option<i128>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  schedule_oracle_stale_threshold: ({seconds}: {seconds: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  schedule_oracle_deviation_bps: ({bps}: {bps: Option<u32>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  get_pending_config_change: ({kind}: {kind: ConfigChangeKind}, options?: MethodOptions) => Promise<AssembledTransaction<Option<PendingConfigChange>>>
+
+  apply_scheduled_changes: ({kind}: {kind: ConfigChangeKind}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  cancel_config_change: ({kind}: {kind: ConfigChangeKind}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -873,6 +907,17 @@ export class Client extends ContractClient {
         arm_oracle_deviation_override: this.txFromJSON<Result<void>>,
         get_user_precision_prediction: this.txFromJSON<Option<PrecisionPrediction>>,
         get_max_precision_participants: this.txFromJSON<u32>,
-        set_max_precision_participants: this.txFromJSON<Result<void>>
+        set_max_precision_participants: this.txFromJSON<Result<void>>,
+        get_precision_predictions_page: this.txFromJSON<Array<PrecisionPrediction>>,
+        get_updown_positions_page: this.txFromJSON<Array<readonly [string, UserPosition]>>,
+        schedule_windows: this.txFromJSON<Result<void>>,
+        schedule_max_stake: this.txFromJSON<Result<void>>,
+        schedule_max_user_exposure: this.txFromJSON<Result<void>>,
+        schedule_max_pending_winnings: this.txFromJSON<Result<void>>,
+        schedule_oracle_stale_threshold: this.txFromJSON<Result<void>>,
+        schedule_oracle_deviation_bps: this.txFromJSON<Result<void>>,
+        get_pending_config_change: this.txFromJSON<Option<PendingConfigChange>>,
+        apply_scheduled_changes: this.txFromJSON<Result<void>>,
+        cancel_config_change: this.txFromJSON<Result<void>>
   }
 }
