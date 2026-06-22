@@ -29,6 +29,7 @@ fn setup() -> (Env, Address, VirtualTokenContractClient<'static>) {
 fn resolve_updown(
     env: &Env,
     client: &VirtualTokenContractClient<'_>,
+    contract_id: &Address,
     final_price: u128,
     run_ledgers: u32,
 ) {
@@ -41,6 +42,8 @@ fn resolve_updown(
         timestamp: env.ledger().timestamp(),
         round_id: round.start_ledger,
         nonce: 1u64,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
 }
 
@@ -49,7 +52,7 @@ fn resolve_updown(
 /// Normal claim: pending winnings accumulate correctly, no overflow.
 #[test]
 fn test_claim_winnings_happy_path() {
-    let (env, _cid, client) = setup();
+    let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let alice = Address::generate(&env);
@@ -63,7 +66,7 @@ fn test_claim_winnings_happy_path() {
     client.place_bet(&alice, &100_0000000, &BetSide::Up);
     client.place_bet(&bob, &200_0000000, &BetSide::Down);
 
-    resolve_updown(&env, &client, 2_0000000, 12); // price went UP — alice wins
+    resolve_updown(&env, &client, &contract_id, 2_0000000, 12); // price went UP — alice wins
 
     let pending = client.get_pending_winnings(&alice);
     assert!(pending > 0, "alice should have pending winnings");
@@ -171,6 +174,8 @@ fn test_record_winnings_mul_overflow_returns_payout_overflow() {
         timestamp: env.ledger().timestamp(),
         round_id: round.start_ledger,
         nonce: 1u64,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
 
     assert_eq!(result, Err(Ok(ContractError::PayoutOverflow)));
@@ -207,6 +212,8 @@ fn test_record_refunds_overflow_returns_payout_overflow() {
         timestamp: env.ledger().timestamp(),
         round_id: round.start_ledger,
         nonce: 1u64,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
 
     assert_eq!(result, Err(Ok(ContractError::PayoutOverflow)));
@@ -240,7 +247,7 @@ fn test_claim_winnings_near_max_succeeds() {
 
 #[test]
 fn test_pending_winnings_cap_enforced_on_refund() {
-    let (env, _cid, client) = setup();
+    let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let alice = Address::generate(&env);
@@ -263,6 +270,8 @@ fn test_pending_winnings_cap_enforced_on_refund() {
         timestamp: env.ledger().timestamp(),
         round_id: round.start_ledger,
         nonce: 1u64,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
     assert_eq!(result, Err(Ok(ContractError::PendingWinningsCapExceeded)));
 
@@ -272,7 +281,7 @@ fn test_pending_winnings_cap_enforced_on_refund() {
 
 #[test]
 fn test_pending_winnings_cap_enforced_on_winnings() {
-    let (env, _cid, client) = setup();
+    let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let alice = Address::generate(&env);
@@ -298,13 +307,15 @@ fn test_pending_winnings_cap_enforced_on_winnings() {
         timestamp: env.ledger().timestamp(),
         round_id: round.start_ledger,
         nonce: 1u64,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
     assert_eq!(result, Err(Ok(ContractError::PendingWinningsCapExceeded)));
 }
 
 #[test]
 fn test_pending_winnings_cap_not_exceeded_succeeds() {
-    let (env, _cid, client) = setup();
+    let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let alice = Address::generate(&env);
@@ -321,7 +332,7 @@ fn test_pending_winnings_cap_not_exceeded_succeeds() {
     client.place_bet(&alice, &100_0000000, &BetSide::Up);
     client.place_bet(&bob, &100_0000000, &BetSide::Down);
 
-    resolve_updown(&env, &client, 2_0000000, 12);
+    resolve_updown(&env, &client, &contract_id, 2_0000000, 12);
 
     // Alice's pending = 200 == cap → OK
     let pending = client.get_pending_winnings(&alice);
@@ -330,7 +341,7 @@ fn test_pending_winnings_cap_not_exceeded_succeeds() {
 
 #[test]
 fn test_pending_winnings_cap_disabled_large_payout_succeeds() {
-    let (env, _cid, client) = setup();
+    let (env, contract_id, client) = setup();
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let alice = Address::generate(&env);
@@ -348,7 +359,7 @@ fn test_pending_winnings_cap_disabled_large_payout_succeeds() {
     client.place_bet(&alice, &100_0000000, &BetSide::Up);
     client.place_bet(&bob, &100_0000000, &BetSide::Down);
 
-    resolve_updown(&env, &client, 2_0000000, 12);
+    resolve_updown(&env, &client, &contract_id, 2_0000000, 12);
 
     // Cap disabled — payout proceeds normally
     let pending = client.get_pending_winnings(&alice);

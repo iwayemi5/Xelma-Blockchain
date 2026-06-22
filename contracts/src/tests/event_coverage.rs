@@ -10,7 +10,13 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, TryIntoVal,
 };
 
-fn setup() -> (Env, Address, Address, VirtualTokenContractClient<'static>) {
+fn setup() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    VirtualTokenContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(VirtualTokenContract, ());
@@ -18,12 +24,12 @@ fn setup() -> (Env, Address, Address, VirtualTokenContractClient<'static>) {
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     client.initialize(&admin, &oracle);
-    (env, admin, oracle, client)
+    (env, contract_id, admin, oracle, client)
 }
 
 #[test]
 fn test_event_coverage_mint_initial() {
-    let (env, _, _, client) = setup();
+    let (env, _, _, _, client) = setup();
     let user = Address::generate(&env);
 
     client.mint_initial(&user);
@@ -46,7 +52,7 @@ fn test_event_coverage_mint_initial() {
 
 #[test]
 fn test_event_coverage_create_round() {
-    let (env, _, _, client) = setup();
+    let (env, _, _, _, client) = setup();
 
     client.create_round(&1_0000000, &None); // UpDown Mode (0)
 
@@ -71,7 +77,7 @@ fn test_event_coverage_create_round() {
 
 #[test]
 fn test_event_coverage_set_windows() {
-    let (env, _, _, client) = setup();
+    let (env, _, _, _, client) = setup();
 
     apply_windows(&env, &client, 10, 20);
 
@@ -98,7 +104,7 @@ fn test_event_coverage_set_windows() {
 
 #[test]
 fn test_event_coverage_place_bet() {
-    let (env, _, _, client) = setup();
+    let (env, _, _, _, client) = setup();
     let user = Address::generate(&env);
     client.mint_initial(&user);
     client.create_round(&1_0000000, &None);
@@ -126,7 +132,7 @@ fn test_event_coverage_place_bet() {
 
 #[test]
 fn test_event_coverage_commit_and_reveal() {
-    let (env, _, _, client) = setup();
+    let (env, _, _, _, client) = setup();
     let user = Address::generate(&env);
     client.mint_initial(&user);
     client.create_round(&1_0000000, &Some(1)); // Precision mode
@@ -187,7 +193,7 @@ fn test_event_coverage_commit_and_reveal() {
 
 #[test]
 fn test_event_coverage_resolve_round() {
-    let (env, _, _, client) = setup();
+    let (env, contract_id, _, _, client) = setup();
     let user = Address::generate(&env);
     client.mint_initial(&user);
     client.create_round(&1_0000000, &None);
@@ -203,6 +209,8 @@ fn test_event_coverage_resolve_round() {
         timestamp: env.ledger().timestamp(),
         round_id: 0,
         nonce: 1,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
 
     let events = env.events().all();
@@ -223,7 +231,7 @@ fn test_event_coverage_resolve_round() {
 
 #[test]
 fn test_event_coverage_cancel_round() {
-    let (env, _, _, client) = setup();
+    let (env, _, _, _, client) = setup();
     client.create_round(&1_0000000, &None);
 
     client.cancel_round(&99u32);
@@ -246,7 +254,7 @@ fn test_event_coverage_cancel_round() {
 
 #[test]
 fn test_event_coverage_claim_winnings() {
-    let (env, _, _, client) = setup();
+    let (env, contract_id, _, _, client) = setup();
     let user = Address::generate(&env);
     client.mint_initial(&user);
     client.create_round(&1_0000000, &None);
@@ -261,6 +269,8 @@ fn test_event_coverage_claim_winnings() {
         timestamp: env.ledger().timestamp(),
         round_id: 0,
         nonce: 1,
+        network_id: env.ledger().network_id(),
+        contract_addr: contract_id.clone(),
     });
 
     client.claim_winnings(&user);
