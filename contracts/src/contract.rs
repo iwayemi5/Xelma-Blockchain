@@ -780,13 +780,14 @@ impl VirtualTokenContract {
         }
 
         let cancelled_at = env.ledger().sequence();
+
+        env.storage().persistent().remove(&key);
+
         #[allow(deprecated)]
         env.events().publish(
             (symbol_short!("config"), symbol_short!("cancelled")),
             (kind, cancelled_at),
         );
-
-        env.storage().persistent().remove(&key);
 
         Ok(())
     }
@@ -2467,9 +2468,10 @@ impl VirtualTokenContract {
         let current_balance = Self::balance(env.clone(), user.clone());
         // Compute new balance before writing — all-or-nothing guarantee
         let new_balance = Self::payout_add(current_balance, pending)?;
-        Self::_set_balance(&env, user.clone(), new_balance);
-
+        
+        // Remove pending winnings before increasing balance (CEI pattern)
         env.storage().persistent().remove(&key);
+        Self::_set_balance(&env, user.clone(), new_balance);
 
         // Emit claim event
         // Topic: ("claim", "winnings")
