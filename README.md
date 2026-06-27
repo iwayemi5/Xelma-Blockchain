@@ -159,6 +159,15 @@ This ensures:
 - ✅ **Simple & predictable** - First predictor gets the remainder
 - ✅ **Fair distribution** - Close to equal split, minimal advantage
 
+### Oracle Operator Runbook
+
+Oracle mistakes are a top incident source. See
+[docs/ORACLE_OPERATOR_RUNBOOK.md](./docs/ORACLE_OPERATOR_RUNBOOK.md) for:
+- Payload field-by-field requirements and copy-paste templates.
+- Troubleshooting matrix for stale, future, deviation, and nonce errors.
+- Escalation steps for pause, cancel, and deviation override.
+- Operational playbooks covering both Up/Down and Precision round resolution.
+
 ### Emergency Pause and Recovery
 
 The contract includes an admin-controlled emergency pause for incidents such as oracle outages or critical bugs.
