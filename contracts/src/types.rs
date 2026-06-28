@@ -81,6 +81,11 @@ pub enum DataKey {
     ArchivedRound(u64),
     /// Ordered round ids for archive retention (oldest at index 0).
     RecentArchivedRoundIds,
+    /// Per-user outcome record for a specific archived round (round_id, user).
+    /// Persisted at settlement for user history queries without event replay.
+    UserRoundOutcome(u64, Address),
+    /// Marker written by migrate_schema_v2_to_v3 to prove the migration ran.
+    MigratedToV3,
     /// Timelocked pending critical config change keyed by change kind.
     PendingConfigChange(ConfigChangeKind),
     /// Optional protocol settlement fee in basis points (1 bp = 0.01%).
@@ -310,4 +315,30 @@ pub struct ArchivedRoundSummary {
     pub pool_down: i128,
     pub participant_count: u32,
     pub settled_at_ledger: u32,
+}
+
+/// Terminal outcome persisted per user per archived round.
+///
+/// Allows `get_user_archived_participation` to answer profile/history
+/// queries without replaying the full event stream.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+#[repr(u32)]
+pub enum UserOutcomeType {
+    Win = 0,
+    Loss = 1,
+    Refund = 2,
+    Cancel = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserRoundOutcome {
+    pub user: Address,
+    pub round_mode: u32,
+    pub prediction_side: u32,
+    pub predicted_price: u128,
+    pub stake: i128,
+    pub payout: i128,
+    pub outcome: UserOutcomeType,
 }
