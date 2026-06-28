@@ -234,6 +234,62 @@ pub enum RoundArchiveStatus {
     FallbackRefund = 2,
 }
 
+/// Composite protocol health status returned by `get_protocol_health`.
+///
+/// Designed for operators to poll a single endpoint instead of stitching
+/// together multiple read-only calls.
+///
+/// ## Status code → alert severity mapping
+///
+/// | code | label           | severity | meaning                                   |
+/// |------|-----------------|----------|-------------------------------------------|
+/// | 0    | HEALTHY         | none     | All subsystems nominal                    |
+/// | 1    | PAUSED          | critical | Contract is emergency-paused               |
+/// | 2    | ORACLE_STALE    | warning  | Oracle heartbeat is stale or offline      |
+/// | 3    | ROUND_STALE     | warning  | Round is past its end ledger but unresolved|
+/// | 4    | NO_ACTIVE_ROUND | info     | No round currently active (idle protocol) |
+/// | 5    | MULTIPLE_ISSUES | critical | Two or more issues detected simultaneously|
+///
+/// ## Phase codes (`active_round_phase`)
+///
+/// | phase | meaning                                           |
+/// |-------|---------------------------------------------------|
+/// | 0     | No active round                                   |
+/// | 1     | Betting open (`ledger < bet_end_ledger`)           |
+/// | 2     | Running / reveal window (`bet_end_ledger ≤ ledger < end_ledger`) |
+/// | 3     | Resolvable (`ledger ≥ end_ledger`)                |
+///
+/// ## Oracle status codes (`oracle_status`)
+///
+/// | code | meaning                                |
+/// |------|----------------------------------------|
+/// | 0    | Active (healthy heartbeat)             |
+/// | 1    | Degraded (heartbeat marked degraded)   |
+/// | 2    | Offline (heartbeat marked offline)     |
+/// | 3    | Unknown (no heartbeat record stored)   |
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProtocolHealthStatus {
+    /// Whether the contract is emergency-paused (`Paused == true`)
+    pub paused: bool,
+    /// Whether the oracle heartbeat is non-stale and not offline
+    pub oracle_live: bool,
+    /// Raw oracle heartbeat status (0=active, 1=degraded, 2=offline, 3=unknown)
+    pub oracle_status: u32,
+    /// Whether a round is currently active
+    pub has_active_round: bool,
+    /// Current round phase (0=no_round, 1=betting, 2=running, 3=resolvable)
+    pub active_round_phase: u32,
+    /// On-chain storage schema version
+    pub schema_version: u32,
+    /// Ledger sequence at which this health snapshot was taken
+    pub ledger_sequence: u32,
+    /// Ledger timestamp at which this health snapshot was taken
+    pub ledger_timestamp: u64,
+    /// Composite status code (see mapping table above)
+    pub status_code: u32,
+}
+
 /// Compact historical round summary persisted after resolve or cancel.
 ///
 /// Designed for explorer/analytics queries without replaying events.

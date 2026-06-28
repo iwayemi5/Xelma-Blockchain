@@ -22,6 +22,6 @@ pub use contract::VirtualTokenContract;
 pub use errors::ContractError;
 pub use types::{
     ArchivedRoundSummary, BetSide, ConfigChangeKind, ConfigChangePayload, DataKey,
-    PendingConfigChange, PrecisionCommitment, PrecisionPrediction, Round, RoundArchiveStatus,
-    UserPosition, UserStats,
+    PendingConfigChange, PrecisionCommitment, PrecisionPrediction, ProtocolHealthStatus, Round,
+    RoundArchiveStatus, UserPosition, UserStats,
 };

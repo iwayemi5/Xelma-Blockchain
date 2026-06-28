@@ -9,7 +9,8 @@ use crate::errors::ContractError;
 use crate::types::{
     ArchivedRoundSummary, BetSide, ConfigChangeKind, ConfigChangePayload, DataKey,
     OracleHeartbeatRecord, OraclePayload, PendingConfigChange, PrecisionCommitment,
-    PrecisionPrediction, Round, RoundArchiveStatus, RoundMode, UserPosition, UserStats,
+    PrecisionPrediction, ProtocolHealthStatus, Round, RoundArchiveStatus, RoundMode, UserPosition,
+    UserStats,
 };
 
 // ─── Economic control limits ─────────────────────────────────────────────────
@@ -487,6 +488,109 @@ impl VirtualTokenContract {
     /// Allowed range: 60–86400 seconds (1 minute to 24 hours).
     pub fn set_oracle_stale_threshold(env: Env, seconds: u64) -> Result<(), ContractError> {
         Self::schedule_oracle_stale_threshold(env, seconds)
+    }
+
+    /// Returns a composite protocol health status aggregating pause state,
+    /// oracle liveness, active round phase, and schema version.
+    ///
+    /// Read-only and deterministic — no authentication required.
+    ///
+    /// ## Status code reference
+    ///
+    /// | code | meaning         | when returned                          |
+    /// |------|-----------------|----------------------------------------|
+    /// | 0    | HEALTHY         | All subsystems nominal                 |
+    /// | 1    | PAUSED          | Contract is emergency-paused           |
+    /// | 2    | ORACLE_STALE    | Oracle heartbeat is stale or offline   |
+    /// | 3    | ROUND_STALE     | Round resolvable but unresolved        |
+    /// | 4    | NO_ACTIVE_ROUND | No round active, oracle healthy        |
+    /// | 5    | MULTIPLE_ISSUES | Two or more simultaneous problems      |
+    pub fn get_protocol_health(env: Env) -> ProtocolHealthStatus {
+        let ledger_sequence = env.ledger().sequence();
+        let ledger_timestamp = env.ledger().timestamp();
+
+        // ─── Pause state ────────────────────────────────────────────────────
+        let paused = Self::is_paused(env.clone());
+
+        // ─── Oracle liveness ────────────────────────────────────────────────
+        let heartbeat_key = DataKey::OracleHeartbeat;
+        Self::_extend_persistent_ttl(&env, &heartbeat_key);
+        let (oracle_live, oracle_status) =
+            match env.storage().persistent().get::<_, OracleHeartbeatRecord>(&heartbeat_key) {
+                None => (false, 3u32),
+                Some(record) => {
+                    if record.status == 2 {
+                        (false, record.status)
+                    } else {
+                        let threshold_key = DataKey::OracleStaleThreshold;
+                        Self::_extend_persistent_ttl(&env, &threshold_key);
+                        let threshold: u64 = env
+                            .storage()
+                            .persistent()
+                            .get(&threshold_key)
+                            .unwrap_or(DEFAULT_ORACLE_STALE_THRESHOLD);
+                        let live = ledger_timestamp <= record.timestamp.saturating_add(threshold);
+                        (live, record.status)
+                    }
+                }
+            };
+
+        // ─── Active round phase ─────────────────────────────────────────────
+        let (has_active_round, active_round_phase) =
+            match env.storage().persistent().get::<_, Round>(&DataKey::ActiveRound) {
+                None => (false, 0u32),
+                Some(round) => {
+                    let phase = if ledger_sequence < round.bet_end_ledger {
+                        1u32
+                    } else if ledger_sequence < round.end_ledger {
+                        2u32
+                    } else {
+                        3u32
+                    };
+                    (true, phase)
+                }
+            };
+
+        // ─── Schema version ─────────────────────────────────────────────────
+        let schema_version = Self::_schema_version(&env).unwrap_or(1);
+
+        // ─── Composite status code ──────────────────────────────────────────
+        let mut issues: u32 = 0;
+        if paused {
+            issues += 1;
+        }
+        if !oracle_live {
+            issues += 1;
+        }
+        if has_active_round && active_round_phase == 3 {
+            issues += 1;
+        }
+
+        let status_code = if paused {
+            1u32 // PAUSED
+        } else if issues > 1 {
+            5u32 // MULTIPLE_ISSUES
+        } else if !oracle_live {
+            2u32 // ORACLE_STALE
+        } else if has_active_round && active_round_phase == 3 {
+            3u32 // ROUND_STALE
+        } else if !has_active_round {
+            4u32 // NO_ACTIVE_ROUND
+        } else {
+            0u32 // HEALTHY
+        };
+
+        ProtocolHealthStatus {
+            paused,
+            oracle_live,
+            oracle_status,
+            has_active_round,
+            active_round_phase,
+            schema_version,
+            ledger_sequence,
+            ledger_timestamp,
+            status_code,
+        }
     }
 
     /// Returns the configured oracle stale threshold, or the default (3600 s) if not set.
