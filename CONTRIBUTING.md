@@ -38,6 +38,45 @@ sent back for detail before they are picked up.
 
 Before opening a PR, consult [`docs/CONTRIBUTOR_TASK_MATRIX.md`](./docs/CONTRIBUTOR_TASK_MATRIX.md) for task-type-specific test and evidence requirements.
 
+## Optional pre-commit hooks
+
+This repository ships an optional pre-commit hook configuration to catch trivial
+issues before push. Hooks are **opt-in** — CI remains the source of truth.
+
+### Install
+
+```bash
+pip install pre-commit   # or your package manager
+pre-commit install
+```
+
+After install, hooks run automatically on `git commit`. They execute:
+
+1. `cargo fmt --check` — formatting guard
+2. `cargo clippy --all-targets --all-features -- -D warnings` — targeted lint
+3. `cargo test --lib` — quick test subset (unit + internal tests, no integration/runtime)
+
+### Opt-out for a single commit
+
+```bash
+git commit --no-verify
+```
+
+### Remove entirely
+
+```bash
+pre-commit uninstall
+```
+
+### Installer script
+
+```bash
+git clone https://github.com/TevaLabs/Xelma-Blockchain
+cd Xelma-Blockchain
+pip install pre-commit
+pre-commit install
+```
+
 ## Security Checks (local)
 
 The CI `security-audit` job runs two checks that maintainers and contributors can reproduce locally.

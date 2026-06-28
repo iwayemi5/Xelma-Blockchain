@@ -23,5 +23,5 @@ pub use errors::ContractError;
 pub use types::{
     ArchivedRoundSummary, BetSide, ConfigChangeKind, ConfigChangePayload, DataKey,
     PendingConfigChange, PrecisionCommitment, PrecisionPrediction, ProtocolHealthStatus, Round,
-    RoundArchiveStatus, UserPosition, UserStats,
+    RoundArchiveStatus, UserOutcomeType, UserPosition, UserRoundOutcome, UserStats,
 };
